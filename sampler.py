@@ -15,7 +15,7 @@ from acquisitions import *
 
 #sys.path.append('./../Line-BO/HPER')
 
-from line_bo_fun import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_over_acqf
+from bo_gpy_dyes import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_over_acqf
 
 #poisson_model = joblib.load(os.getcwd()+'/../data/poisson_RF_trained.pkl')
 

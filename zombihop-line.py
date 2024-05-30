@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 
 from sampler import line_bo_sampler
 import sys
-sys.path.append('./../Line-BO/HPER')
+#sys.path.append('./../Line-BO/HPER')
 
 from bo_gpy_dyes import calc_3d_from_ternary
 
