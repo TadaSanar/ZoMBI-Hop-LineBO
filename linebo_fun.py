@@ -11,8 +11,9 @@ import numpy as np
 import n_sphere
 from itertools import product
 import matplotlib.pyplot as plt
-from linebo_main import acq_from_BO_object
 from numpy.linalg import lstsq #, solve
+
+from linebo_wrappers import get_acq, define_acq_object
 
 def test_constraint(x, upper_lim = 1, lower_lim = 0.995):
     
@@ -506,78 +507,6 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
     '''
     return a, b, tA, tB
 
-def nearest_x(x_query, x_sampled):
-    
-    # NOTE: This version assumes equally spaced x points along an axis.
-    
-    N = x_sampled.shape[1]
-    
-    # Assumed to be the same in every dimension.
-    n_steps_dim = np.round((x_sampled.shape[0])**(1/N))
-        
-    delta_x = np.zeros(N)
-    
-    for i in range(N):
-        
-        delta_x[i] = (x_sampled[-1,i] - x_sampled[0,i])/(n_steps_dim-1)
-        
-    nearest_x_steps = ((x_query - x_sampled[0,:]) / delta_x).round(0).astype(int)
-    
-    # If the dimension is constant.
-    nearest_x_steps[:, delta_x == 0] = 0
-    
-    x_nearest = (nearest_x_steps * delta_x) + x_sampled[0,:]
-    
-    # NOTE: This works only for "C-contiguous style" with the last index 
-    # varying the fastest. 
-    idx = np.sum([(nearest_x_steps[:,i] * (n_steps_dim**(N-1-i))) for i in 
-                   range(N)], axis = 0).astype(int)
-    
-    if np.any(idx > x_sampled.shape[0]) or np.any(idx < 0):
-        
-        raise Exception("Index calculation did not succeed.")
-    
-    if np.allclose(x_sampled[idx,:], x_nearest, rtol = 10e-3) is False:
-        
-        raise Exception("Acquisition array indexing or step size is not as expected.")
-        
-        
-    '''
-    # This version works for non-equally spaced x points.
-    
-    # Note: I tested this is faster than  np.linalg.norm + 
-    # scipy.optimize.linear_sum_assignment. I sthere other ways to make this
-    # faster?
-    
-    idx = np.zeros(x_query.shape[0], ) -1
-    
-    # TO DO: Vectorize.
-    for i in range(x_query.shape[0]):
-        
-        idx[i] = np.argmin(np.sum((x_query[i,:] - x_sampled)**2, axis = 1))
-    
-        
-    '''
-    return idx
-
-def get_acq_values(x, acq_object, acq_params):
-
-    if isinstance(acq_object, dict) is True:
-        
-        # Assume dictionary contains two numpy arrays that are the x and y
-        # values of the acquisition function along the search space.
-        
-        x_acq = acq_object['x']
-        idx_x_steps = nearest_x(x, x_acq).astype(int)
-        acq_values = acq_object['y'][idx_x_steps]
-   
-    else:
-        
-        # Assume the object can predict acquisition values directly.
-        acq_values = acq_object(acq_params, x)
-        
-    return acq_values
-    
 def integrate_over_acqf(p, K, t_start, t_stop, n_points, acq_object, 
                         acq_max = True, acq_params = None):
     """
@@ -612,7 +541,7 @@ def integrate_over_acqf(p, K, t_start, t_stop, n_points, acq_object,
     
     x_steps = np.tile(p.T, n_points).T + (np.reshape(t_steps, (n_points, 1)) * K)
     
-    acq_values = get_acq_values(x_steps, acq_object = acq_object, 
+    acq_values = get_acq(x_steps, acq_object = acq_object, 
                                 acq_params = acq_params)
     
     # In GPyOpt, the acquisition values are negative but could be otherwise
@@ -679,7 +608,7 @@ def integrate_all_K_over_acqf(p, K_cand, t_starts, t_stops, n_points, acq_object
         delta_t_all[i] = delta_t
         x_steps = np.tile(p.T, n_points).T + (np.reshape(t_steps, (n_points, 1)) * K_cand[[i],:])
         
-        acq_values = get_acq_values(x_steps, acq_object = acq_object, 
+        acq_values = get_acq(x_steps, acq_object = acq_object, 
                                     acq_params = acq_params)
         acq_values_all[[i],:] = acq_values.T
     
@@ -713,7 +642,7 @@ def integrate_all_K_over_acqf(p, K_cand, t_starts, t_stops, n_points, acq_object
 
 def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
              selection_method = 'integrate_acq_line', constrain_sum_x = False,
-             plotting = True):
+             plotting = True, acq_params = None):
     """
     Note that the selection method 'integrate_acq_line' is straightforward
     integration here, so it results in the preference toward longer lines
@@ -735,11 +664,15 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
         DESCRIPTION. The default is 0.
     M : TYPE, optional
         DESCRIPTION. The default is 2.
-    acq_max : TYPE, optional
-        DESCRIPTION. The default is True.
-    selection_method : TYPE, optional
-        DESCRIPTION. The default is 'integrate_acq_line'.
-
+    acq_max : boolean, optional
+        Set True if acquisition function is defined so that its maximum is the
+        optimum. The default is True.
+    selection_method : str, optional
+        Line selection method. 'integrate_acq_line' integrates over the
+        acquisition function values. 'random_line' picks the line randomly
+        among the candidates defined py points K_cand and point p. The default 
+        is 'integrate_acq_line'.
+    
     Raises
     ------
     Exception
@@ -774,12 +707,14 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
         #for i in range(K_cand.shape[0]):
         #    
         #    I_all[i] = integrate_over_acqf(p, K_cand[[i],:], tA[i,:], tB[i,:], 
-        #                                   500, acq_object = acq_from_BO_object, 
+        #                                   500, acq_object = acq_function, 
         #                                   acq_max = acq_max, acq_params = BO_object)
         
+        acq_object = define_acq_object(BO_object, acq_params = acq_params)
+        
         I_all = integrate_all_K_over_acqf(p, K_cand, tA, tB, 500, 
-                                  acq_object = acq_from_BO_object, 
-                                  acq_max = acq_max, acq_params = BO_object)
+                                  acq_object = acq_object, 
+                                  acq_max = acq_max, acq_params = acq_params)
         
         idx = np.argmax(I_all, axis = 0)
         print('Mean value of integrals along lines: ', np.mean(I_all), 
@@ -831,7 +766,8 @@ def pick_random_init_data(n_init, N, emax, emin, M, K_cand,
             A_sel[i,:], B_sel[i,:], tA_sel[i], tB_sel[i], K_sel[i,:] = choose_K(
                 None, p[[i], :], K_cand, emax = emax, emin = emin, M = M,
                 selection_method = 'random_line', 
-                constrain_sum_x = constrain_sum_x, plotting = plotting)
+                constrain_sum_x = constrain_sum_x, plotting = plotting,
+                acq_object = None)
             
         else:
             

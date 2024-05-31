@@ -16,8 +16,10 @@ import os
 import dill
 from datetime import datetime
 
+from linebo_util import create_Nd_grid, read_init_data, append_bo_data, extract_opt_value, calc_regret
+from linebo_wrappers import define_bo, suggest_next_x, extract_model_opt_value
 from linebo_fun import pick_random_init_data, calc_K, compute_x_coords_along_lines, choose_K
-from linebo_plots import plot_BO_progress, init_plotting_grids, plot_ternary, plot_BO_main_results, plot_landscapes
+from linebo_plots import plot_BO_main_results, plot_BO_progress, plot_landscapes, init_plotting_grids, plot_ternary
 
 def ackley(x, b=0.5, a=20, c=2*np.pi, limit=15, noise_level = 0):
     """
@@ -54,6 +56,44 @@ def poisson(x, noise_level = 0):
         y = y + noise
         
     return y
+
+def calculate_gt(target_funs, target_fun_idx, task_max, points = None,
+                 constrain_sum_x = None, N = None):
+    
+    if points is not None:
+        
+        # Calculate ground truth for the given points. 
+        y_gt = sample_y(points, target_fun_idx, target_funs)
+        
+    else:
+        
+        # Create a grid and calculate ground truth for these points.
+        if N is not None:
+            
+            
+            points_temp = create_Nd_grid(N, interval = 0.001*N, 
+                                         constrain_sum_x = constrain_sum_x)
+            
+        else:
+            
+            Exception('Give N, i.e., the dimensions of the search space for calculating the ground truth values.')
+            
+        y_gt = sample_y(points_temp, target_fun_idx, target_funs)
+    
+    # Ground truth optimum value
+    if task_max is True:
+        
+        idx_opt_gt = np.argmax(y_gt, axis = 0)
+        
+    else:
+        
+        idx_opt_gt = np.argmin(y_gt, axis = 0)
+        
+    y_opt_gt = y_gt[idx_opt_gt, :].copy()
+    x_opt_gt = points[idx_opt_gt, :].copy()
+    
+    return x_opt_gt, y_opt_gt, y_gt
+
 
 def sample_y(x, target_fun_idx, target_funs = {1: 'ackley', 2: 'poisson', 
              3: 'zombi', 4: 'experimental'}, model = None, noise_level = 0):
@@ -98,399 +138,6 @@ def sample_y(x, target_fun_idx, target_funs = {1: 'ackley', 2: 'poisson',
         raise Exception("Not implemented.")
         
     return y
-
-def build_constraint_str_gpyopt(X_variables, total_sum_btw = [0.995, 1.0], 
-                                prefix = 'x[:,', postfix = ']'):
-
-    c1 = ''
-    c0 = str(total_sum_btw[0])
-
-    for idx in range(len(X_variables)):
-        c1 = c1 + prefix + str(idx) + postfix + ' + '
-        c0 = c0 + ' - ' + prefix + str(idx) + postfix
-
-    c1 = c1[0:-2] + '- ' + str(total_sum_btw[1])
-    
-    constraints = [{'name': 'constr_1', 'constraint': c0},
-                   {'name': 'constr_2', 'constraint': c1}]
-        
-    return constraints
-
-'''
-def indicator_constraints_gpyopt(x, constraints):
-    """
-    DELETE? FUNCTION NOT BEING USED ANYWHERE?
-    Returns array of ones and zeros indicating if x is within the constraints
-    This implementation is from GPyOpt.
-    """
-    x = np.atleast_2d(x)
-    I_x = np.ones((x.shape[0],1))
-    if constraints is not None:
-        for d in constraints:
-            try:
-                exec('constraint = lambda x:' + d['constraint'], globals())
-                ind_x = (constraint(x) <= 0) * 1
-                I_x *= ind_x.reshape(x.shape[0],1)
-            except:
-                print('Fail to compile the constraint: ' + str(d))
-                raise
-    return I_x
-'''
-def define_bo(x_all, y_all, emin, emax, N, task_max = True, batch_size = 1,
-              constrain_sum_x = False):
-    """
-    Defines a GPyOpt Bayesian optimization object with the given x, y data,
-    search space boundaries & dimensionality, and sets the task as minimization
-    or maximization.
-
-    Parameters
-    ----------
-    x_all : Numpy array of shape (n_samples, n_dimensions)
-        Input x data for Bayesian optimization.
-    y_all : Numpy array of shape (n_samples, 1)
-        Input y data for Bayesian optimization.
-    emin : Numpy array of shape (1, n_dimensions)
-        Lower boundaries of the search space.
-    emax : Numpy array of shape (1, n_dimensions)
-        Upper boundaries of the search space.
-    N : Int
-        Number of dimensions.
-    task_max : boolean, optional
-        True if the optimization task is maximization, False if minimization.
-        The default is True.
-
-    Returns
-    -------
-    BO_object : GPyOpt.methods.BayesianOptimization
-        The Bayesian optimization object that has been initialized and fit with
-        the input data. Batch size is one. 
-
-    """
-    
-    # Set search space boundaries (GPyOpt).
-    bounds = []
-    for j in range(N):
-        bounds.append({'name': str(j), 'type': 'continuous',
-                       'domain': [emin[0,j], emax[0,j]]})
-    
-    constraints = None
-    
-    if constrain_sum_x == True:
-        
-        constraints = build_constraint_str_gpyopt(['X' + str(i) for i in range(N)])
-    
-    # Implemented with f=None because will eventually be used with experimental
-    # data.
-    BO_object = GPyOpt.methods.BayesianOptimization(f=None,
-                                                    domain=bounds,
-                                                    constraints=constraints,
-                                                    acquisition_type='LCB',
-                                                    normalize_Y=True,
-                                                    X=x_all,
-                                                    Y=y_all,
-                                                    evaluator_type='local_penalization',
-                                                    batch_size=1,#batch_size,
-                                                    #acquisition_jitter=0.01,
-                                                    noise_var = 0.1, #10e-12,# GPyOpt assumes normalized Y data at the point when variance is defined.
-                                                    optimize_restarts = 25,#25
-                                                    max_iters = 3000,#3000
-                                                    exact_feval = False,
-                                                    maximize = task_max,
-                                                    exploration_weight = 2,#2.5, # For LCB: Higher value means more exploration.
-                                                    ARD = True)
-    
-    return BO_object
-    
-def suggest_next_x(BO_object):
-    """
-    Suggest the next x datapoint to be sampled using the Bayesian optimization
-    object.
-
-    Parameters
-    ----------
-    BO_object : GPyOpt.methods.BayesianOptimization
-        The Bayesian optimization object that has been initialized and fit with
-        the input data collected this far.
-
-    Returns
-    -------
-    p_next : Numpy array of shape (n_samples, n_dimensions)
-        The next point(s) to sample suggested by BO_object. 
-
-    """
-    
-    if type(BO_object) is GPyOpt.methods.BayesianOptimization:
-        
-        p_next = BO_object.suggest_next_locations()
-        
-    else:
-        
-        p_next = None
-        Exception('This function has not been implemented for this type of BO.')
-    
-    return p_next
-
-def predict_from_BO_object(BO_object, x, unscale_y = True, return_std = False):
-    """
-    Predict the posterior mean value of the given x datapoint using the given
-    Bayesian optimization object.
-
-    Parameters
-    ----------
-    BO_object : GPyOpt.methods.BayesianOptimization
-        The Bayesian optimization object that has been initialized and fit with
-        the input data collected this far.
-    x : Numpy array of shape (n_samples, n_dimensions)
-        The x datapoint(s) to predict.
-
-    Returns
-    -------
-    y : Numpy array of shape (n_samples, 1)
-        The posterior mean value of y datapoint(s) predicted with BO_object.
-
-    """
-    
-    if type(BO_object) is GPyOpt.methods.BayesianOptimization:
-        
-        gpmodel = BO_object.model.model
-        
-        if type(gpmodel) is GPy.models.gp_regression.GPRegression:
-            
-            # Prediction output is mean, variance.
-            y, var = gpmodel.predict(x)
-            std = np.sqrt(var)
-            
-        elif type(gpmodel) is GPyOpt.models.gpmodel.GPModel:
-            
-            # Prediction output is mean, standard deviation.
-            y, std = gpmodel.predict(x)
-            var = (std)**2
-        
-        y_train_unscaled = BO_object.Y
-        
-    else:
-        
-        Exception('This function has not been implemented for this type of BO.')
-    
-    if y_train_unscaled.shape[0] > 0:
-        
-        posterior_mean_true_units = y * np.std(y_train_unscaled) + \
-            np.mean(y_train_unscaled)
-        posterior_std_true_units = (np.std(y_train_unscaled)) * (std)
-        
-    if return_std is False:
-        
-        result = posterior_mean_true_units
-        
-    else:
-        
-        result = [posterior_mean_true_units, posterior_std_true_units]
-    
-    return result
-
-def acq_from_BO_object(BO_object, x):
-    """
-    Compute the acquisition function value of the given x datapoint(s) using the given
-    Bayesian optimization object.
-
-    Parameters
-    ----------
-    BO_object : GPyOpt.methods.BayesianOptimization
-        The Bayesian optimization object that has been initialized and fit with
-        the input data collected this far.
-    x : Numpy array of shape (n_samples, n_dimensions)
-        The x datapoint(s) to predict.
-
-    Returns
-    -------
-    y : Numpy array of shape (n_samples, 1)
-        The acquisition function value of y datapoint(s) predicted with BO_object.
-
-    """
-    if type(BO_object) is GPyOpt.methods.BayesianOptimization:
-        
-        # TO DO: Is there difference among the two options?
-        #a = BO_object.acquisition._compute_acq(x)
-        a = BO_object.acquisition.acquisition_function(x)
-        
-        
-    else:
-        
-        a = None
-        Exception('This function has not been implemented for this type of BO.')
-    
-    return a
-
-def append_bo_data(x, y, x_round, y_round, x_all = None, y_all = None):
-    
-    x_round.append(x)
-    y_round.append(y)
-    
-    # Append to the cumulative x and y variables (that will go into BO).
-    
-    if x_all is None:
-        
-        # Round 0
-        x_all = x.copy()
-        y_all = y.copy()
-        
-    else:
-        
-        x_all = np.append(x_all, x, axis = 0)
-        y_all = np.append(y_all, y, axis = 0)
-    
-    return x_round, y_round, x_all, y_all
-
-def extract_opt_value(x_all, y_all, task_max):
-    
-    if task_max is True:
-        
-        idx_opt = np.argmax(y_all, axis = 0)
-        
-    else:
-        
-        idx_opt = np.argmin(y_all, axis = 0)
-        
-    y = y_all[idx_opt, :].copy()
-    x = x_all[idx_opt, :].copy()
-    
-    return x, y
-
-def extract_model_opt_value(BO_object, x_all, task_max):
-    
-    y_all = predict_from_BO_object(BO_object, x_all)
-    
-    if task_max is True:
-        
-        idx_opt = np.argmax(y_all, axis = 0)
-        
-    else:
-        
-        idx_opt = np.argmin(y_all, axis = 0)
-        
-    y = y_all[idx_opt, :].copy()
-    x = x_all[idx_opt, :].copy()
-    
-    return x, y
-
-#def create_2d_grid(range_min=0, range_max=1, interval=0.01):
-    
-# OLD VERSION THAT IS BEING STORED FOR A WHILE.
-#   
-#    a = np.arange(range_min, range_max, interval)
-#    xt, yt = np.meshgrid(a,a, sparse=False)
-#    points = np.transpose([xt.ravel(), yt.ravel()])
-#    ## The x, y, z coordinates need to sum up to 1 in a ternary grid.
-#    #points = points[abs(np.sum(points, axis=1)-1) < interval]
-#    
-#    return points
-
-def create_Nd_grid(N, range_min=0, range_max=1, interval=0.01, 
-                   constrain_sum_x = False):
-    
-    a = np.arange(range_min, range_max, interval)
-    b = [a] * N
-    grid = np.meshgrid(*b, sparse=False)
-    points = np.reshape(np.array(grid).transpose(), (a.shape[0]**N, N))
-    
-    if constrain_sum_x == True:
-        
-        ## The x_i coordinates need to sum up to 1.
-        # Note! This parts needs to be done with an external constraint 
-        # checking function if you want to create flexible constraints.
-        points = points[abs(np.sum(points, axis=1)-1) < interval]
-    
-    return points
-
-
-def calc_regret(x_opt, y_opt, x_true, y_true = 0):
-    
-    regret_x = np.sum((x_opt - x_true)**2, axis = 1)
-    regret_y = np.sum((y_opt - y_true)**2, axis = 1)
-    
-    return regret_x, regret_y
-
-
-def calculate_gt(target_funs, target_fun_idx, task_max, points = None,
-                 constrain_sum_x = None):
-    
-    if points is not None:
-        
-        y_gt = sample_y(points, target_fun_idx, target_funs)
-        
-    else:
-        
-        points_temp = create_Nd_grid(N, interval = 0.001*N, 
-                                constrain_sum_x = constrain_sum_x)
-        y_gt = sample_y(points_temp, target_fun_idx, target_funs)
-    
-    # Ground truth optimum value
-    if task_max is True:
-        
-        idx_opt_gt = np.argmax(y_gt, axis = 0)
-        
-    else:
-        
-        idx_opt_gt = np.argmin(y_gt, axis = 0)
-        
-    y_opt_gt = y_gt[idx_opt_gt, :].copy()
-    x_opt_gt = points[idx_opt_gt, :].copy()
-    
-    return x_opt_gt, y_opt_gt, y_gt
-
-def read_init_data(file, x_columns_start_idx = 1, y_column_idx = 7,
-                   average_duplicates = False, scale_x = False,
-                   square_y = False):
-    
-    if isinstance(file, str) is True:
-        
-        # Only one file to read.
-        files = [file]
-        
-    else:
-        
-        # A list of files.
-        files = file
-        
-    x_all = np.empty((0,y_column_idx-x_columns_start_idx))
-    y_all = np.empty((0,1))
-    
-    for f in files:
-        
-        data = pd.read_csv(f, index_col=0)
-        print(f)
-        x = data.iloc[:,x_columns_start_idx:y_column_idx].values
-        y = data.iloc[:, y_column_idx].values.reshape((x.shape[0],1))
-        
-        if average_duplicates is True:
-            
-            unique_x, idx = np.unique(x, return_inverse=True, axis = 0)
-            
-            unique_y = np.zeros((unique_x.shape[0],1))
-            unique_y[:,:] = np.nan
-            
-            for i in range(unique_x.shape[0]):
-                
-                idx_to_average = np.where(idx == i)
-                
-                unique_y[i, :] = np.mean(y[idx_to_average,0])
-                
-            x = unique_x
-            y = unique_y
-            
-        x_all = np.concatenate((x_all, x), axis=0)
-        y_all = np.concatenate((y_all, y), axis = 0)
-        
-    if scale_x is True:
-        
-        x_all = x_all/(np.reshape(np.sum(x_all, axis = 1), (x_all.shape[0],1)))
-        
-    if square_y is True:
-        
-        y_all = y_all**2
-    
-    return x_all, y_all
-    
 
 def simulated_batch_BO(n_rounds, n_init, n_droplets, N, target_fun_idx, target_funs, 
                        noise_level, emin, emax, task_max, plotting, 
@@ -580,7 +227,6 @@ def simulated_batch_BO(n_rounds, n_init, n_droplets, N, target_fun_idx, target_f
                              idx_to_compute, emin, emax, j, N, task_max)
         
     return x_round, y_round, x_all, y_all, x_opt, y_opt
-    
 
 if __name__ == "__main__":
     
@@ -690,7 +336,7 @@ if __name__ == "__main__":
     constrain_sum_x = True
     
     # Set to True if you want to save all the results.
-    save_results = False
+    save_results = True
     
     ###############################################################################
     # INITIALIZE VARIABLES
@@ -830,7 +476,8 @@ if __name__ == "__main__":
             # Define BO object with data x_all, y_all.
             BO_object = define_bo(x_all, y_all, emin, emax, N, 
                                   task_max = task_max, 
-                                  constrain_sum_x = constrain_sum_x) # TO DO
+                                  constrain_sum_x = constrain_sum_x,
+                                  implementWithBOPackage = 'GpyOpt')
             
             # Suggest the p point for the next round.
             p_next = suggest_next_x(BO_object)
@@ -861,7 +508,7 @@ if __name__ == "__main__":
             A_sel[n_init + j, :], B_sel[n_init + j, :], tA_sel[n_init + j], tB_sel[n_init + j], K_sel[n_init + j, :] = choose_K(
                 BO_object, p_next, K_cand, emax = emax, emin = emin, M = M, 
                 acq_max = acq_max, selection_method = selection_method,
-                constrain_sum_x = constrain_sum_x, plotting = plotting) # TO DO
+                constrain_sum_x = constrain_sum_x, plotting = plotting, acq_params = None) # TO DO
             
             print('A next: ', A_sel[n_init + j, :], ', sums up to ', 
                   np.sum(A_sel[n_init + j, :]))
@@ -895,9 +542,10 @@ if __name__ == "__main__":
             if plotting == True:
                 
                 plot_BO_progress(BO_object, x_plot, x_all, y_all, p_sel, K_sel, idx_to_compute, emin, 
-                             emax, j, N, task_max, x_opt_true = x_opt_true,
+                             emax, j, N, task_max,  x_opt_true = x_opt_true,
                              y_opt_true = y_opt_true, 
-                             x_opt_uncertainty = x_opt_uncertainty)
+                             x_opt_uncertainty = x_opt_uncertainty,
+                             acq_params = None)
         
 
     
@@ -933,7 +581,9 @@ if __name__ == "__main__":
             
             if N > 1:
                 
-                plot_landscapes(BO_object, x_plot, target_funs, target_fun_idx,
+                y_plot_gt = sample_y(x_plot, target_fun_idx, target_funs)
+                
+                plot_landscapes(BO_object, x_plot, y_plot_gt,
                                     idx0 = 0, idx1 = 1)
                 
     y_opt_gp_round_by_round = np.array([])

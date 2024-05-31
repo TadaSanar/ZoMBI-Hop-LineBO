@@ -11,8 +11,14 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from plotting_v2 import triangleplot
 
-from linebo_fun import get_acq_values
-from linebo_main import create_Nd_grid, predict_from_BO_object, acq_from_BO_object, sample_y
+#from linebo_fun import get_acq_values
+
+from linebo_util import create_Nd_grid
+
+#import linebo_main.create_Nd_grid
+from linebo_wrappers import predict_from_BO_object, define_acq_object, get_acq
+#import linebo_main.acq_from_BO_object
+#import linebo_main.sample_y
 
 def calc_ternary(x):
     
@@ -54,12 +60,14 @@ def plot_ternary(x, p_sel, K_sel, idx_to_compute):
 
 def plot_BO_progress(BO_object, x_plot, x, y, p_sel, K_sel, idx_to_compute, emin, 
                      emax, j, N, task_max, x_opt_true = None, y_opt_true = None,
-                     x_opt_uncertainty = None):
+                     x_opt_uncertainty = None, acq_params = None):
     
     if N == 2:
         BO_object.plot_acquisition()
     
     if N == 3:
+        
+        acq_object = define_acq_object(BO_object, acq_params = acq_params)
         
         surf_points = create_Nd_grid(3, range_min=0, range_max=1, interval=0.01, 
                            constrain_sum_x = True)
@@ -222,8 +230,8 @@ def plot_BO_progress(BO_object, x_plot, x, y, p_sel, K_sel, idx_to_compute, emin
         surf_points = create_Nd_grid(3, range_min=0, range_max=1, interval=0.02, 
                            constrain_sum_x = True)
         
-        surf_data = get_acq_values(surf_points, acq_object = acq_from_BO_object, 
-                                    acq_params = BO_object)
+        surf_data = get_acq(surf_points, acq_object = acq_object, 
+                                    acq_params = acq_params)
         
         surf_levels = np.arange(np.min(surf_data)-0.01, np.max(surf_data)+0.01, 
                             (np.max(surf_data)-np.min(surf_data))/20)
@@ -305,8 +313,8 @@ def plot_BO_progress(BO_object, x_plot, x, y, p_sel, K_sel, idx_to_compute, emin
     # Search space
     if j > 0:
 
-        y_plot_bo = get_acq_values(x_plot, acq_object = acq_from_BO_object, 
-                                    acq_params = BO_object) #acq_from_BO_object(BO_object, x_plot)
+        y_plot_bo = get_acq(x_plot, acq_object = acq_object, 
+                                    acq_params = acq_params) #acq_from_BO_object(BO_object, x_plot)
         
         plt.scatter(x_plot[:,[0]], x_plot[:,[1]], marker = '.', c = y_plot_bo) # To do: change to contour
         cbar = plt.colorbar()
@@ -359,21 +367,21 @@ def plot_BO_main_results(x_opt, y_opt, y_round, n_rounds, title = ''):
     plt.title(title)
     plt.show()    
 
-def plot_landscapes(BO_object, x_plot, target_funs, target_fun_idx,
+def plot_landscapes(BO_object, x_plot, y_plot_gt = None,
                     idx0 = 0, idx1 = 1):
 
-    y_plot_gt = sample_y(x_plot, target_fun_idx, target_funs)
-    
     y_plot_bo = predict_from_BO_object(BO_object, x_plot)
     
-    plt.figure()
-    plt.title('Ground truth')
-    plt.scatter(x_plot[:,[idx0]], x_plot[:,[idx1]], c = y_plot_gt)
-    plt.xlabel('$x_' + str(idx0) + '$')
-    plt.ylabel('$x_' + str(idx1) + '$')
-    cbar = plt.colorbar()
-    cbar.set_label('$f(\overrightarrow{x})$')
-    plt.show()
+    if y_plot_gt is not None:
+        
+        plt.figure()
+        plt.title('Ground truth')
+        plt.scatter(x_plot[:,[idx0]], x_plot[:,[idx1]], c = y_plot_gt)
+        plt.xlabel('$x_' + str(idx0) + '$')
+        plt.ylabel('$x_' + str(idx1) + '$')
+        cbar = plt.colorbar()
+        cbar.set_label('$f(\overrightarrow{x})$')
+        plt.show()
     
     plt.figure()
     plt.title('BO result')

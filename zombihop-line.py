@@ -17,7 +17,8 @@ from sampler import line_bo_sampler
 import sys
 #sys.path.append('./../Line-BO/HPER')
 
-from bo_gpy_dyes import calc_3d_from_ternary
+#from bo_gpy_dyes import calc_3d_from_ternary
+from linebo_plots import calc_3d_from_ternary
 
 # Build analytical model
 def ackley(x, b=0.5, a=20, c=2*np.pi, limit=15):

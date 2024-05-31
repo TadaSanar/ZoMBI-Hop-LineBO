@@ -15,7 +15,7 @@ from acquisitions import *
 
 #sys.path.append('./../Line-BO/HPER')
 
-from bo_gpy_dyes import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_over_acqf
+from linebo_fun import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_over_acqf
 
 #poisson_model = joblib.load(os.getcwd()+'/../data/poisson_RF_trained.pkl')
 
@@ -155,7 +155,7 @@ def choose_K_acqarray(acquisitions, p, K_cand, x_acquisitions, emax = 1,
     
     return A_sel, B_sel, tA_sel, tB_sel, K_sel
 
-def acq_fun_zombihop(acq_params, x):
+def acq_fun_zombihop(x, acq_params):
     
     acquisition_type = acq_params['acq_type'] 
     acq_GP = acq_params['acq_GP']
