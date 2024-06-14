@@ -7,15 +7,12 @@ Created on Fri May 31 15:13:57 2024
 """
 
 import numpy as np
-import GPy
-import GPyOpt
-#import zombihop
-
+import sys
 
 from linebo_util import nearest_x
 
 def define_bo(x_all, y_all, emin, emax, N, task_max = True, batch_size = 1,
-              constrain_sum_x = False, implementWithBOPackage = 'GpyOpt'):
+              constrain_sum_x = False, implementWithBOPackage = 'GPyOpt'):
     """
     
     Defines a GPyOpt Bayesian optimization object with the given x, y data,
@@ -45,7 +42,11 @@ def define_bo(x_all, y_all, emin, emax, N, task_max = True, batch_size = 1,
         the input data. Batch size is one. 
 
     """
-    if implementWithBOPackage == 'GpyOpt':
+    if implementWithBOPackage not in sys.modules:
+        
+        raise Exception('The selected BO Python packge has not been imported. Import it in the main script and try again.')
+    
+    if implementWithBOPackage == 'GPyOpt':
         
         # Set up BO with GPyOpt BO package.
         
@@ -81,9 +82,10 @@ def define_bo(x_all, y_all, emin, emax, N, task_max = True, batch_size = 1,
                                                         exploration_weight = 2,#2.5, # For LCB: Higher value means more exploration.
                                                         ARD = True)
         
+        
     else:
         
-        Exception('define_bo() has not been implemented for BO package ' + 
+        raise Exception('define_bo() has not been implemented for BO package ' + 
                   implementWithBOPackage + '. Request another BO package.')
     
     return BO_object
@@ -106,18 +108,21 @@ def suggest_next_x(BO_object):
 
     """
     
-    if type(BO_object) is GPyOpt.methods.BayesianOptimization:
+    if 'GPyOpt' in sys.modules:
         
-        p_next = BO_object.suggest_next_locations()
+        if type(BO_object) is GPyOpt.methods.BayesianOptimization:
+            
+            p_next = BO_object.suggest_next_locations()
         
     else:
         
         p_next = None
-        Exception('This function has not been implemented for this type of BO.')
+        raise Exception('This function has not been implemented for this BO package.')
     
     return p_next
 
-def predict_from_BO_object(BO_object, x, unscale_y = True, return_std = False):
+def predict_from_BO_object(BO_object, x, unscale_y = True, return_std = False,
+                           include_likelihood = False):
     """
     Predict the posterior mean value of the given x datapoint using the given
     Bayesian optimization object.
@@ -136,29 +141,34 @@ def predict_from_BO_object(BO_object, x, unscale_y = True, return_std = False):
         The posterior mean value of y datapoint(s) predicted with BO_object.
 
     """
+    # Let's not add the likelihood noise here because the function is used only for acquisition function calls.
     
-    if type(BO_object) is GPyOpt.methods.BayesianOptimization:
-        
-        gpmodel = BO_object.model.model
-        
-        if type(gpmodel) is GPy.models.gp_regression.GPRegression:
-            
-            # Prediction output is mean, variance.
-            y, var = gpmodel.predict(x)
-            std = np.sqrt(var)
-            
-        elif type(gpmodel) is GPyOpt.models.gpmodel.GPModel:
-            
-            # Prediction output is mean, standard deviation.
-            y, std = gpmodel.predict(x)
-            var = (std)**2
+    if 'GPyOpt' in sys.modules:
         
         y_train_unscaled = BO_object.Y
         
+        if type(BO_object) is GPyOpt.methods.BayesianOptimization:
+            
+            gpmodel = BO_object.model.model
+            
+        if type(gpmodel) is GPyOpt.models.gpmodel.GPModel:
+            
+            # Prediction output is mean, standard deviation.
+            y, std = gpmodel.predict(x, with_noise = include_likelihood)
+            var = (std)**2
+            
+        elif 'GPy' in sys.modules:
+            
+            if type(gpmodel) is GPy.models.gp_regression.GPRegression:
+                    
+                    # Prediction output is mean, variance.
+                    y, var = gpmodel.predict(x, include_likelihood = include_likelihood)
+                    std = np.sqrt(var)
+    
     else:
         
-        Exception('This function has not been implemented for this type of BO.')
-    
+        raise Exception('This function has not been implemented for this BO package.')
+            
     if y_train_unscaled.shape[0] > 0:
         
         posterior_mean_true_units = y * np.std(y_train_unscaled) + \
@@ -194,26 +204,28 @@ def define_acq_object(BO_object, acq_params = None):#, x):
         The acquisition function value of x datapoint(s) predicted with BO_object.
 
     """
-    if isinstance(BO_object, GPyOpt.methods.BayesianOptimization):
+    if 'GPyOpt' in sys.modules:
         
-        # TO DO: Is there difference among the two options?
-        #a = BO_object.acquisition._compute_acq(x)
-        #a = BO_object.acquisition.acquisition_function(x)
-        acq_object = BO_object.acquisition.acquisition_function
-        
+        if isinstance(BO_object, GPyOpt.methods.BayesianOptimization):
+            
+            # TO DO: Is there difference among the two options?
+            #a = BO_object.acquisition._compute_acq(x)
+            #a = BO_object.acquisition.acquisition_function(x)
+            acq_object = BO_object.acquisition.acquisition_function
+            
     elif (type(acq_params['acq_dictionary']) is dict): # && (type(BO_object) is [type of ZoMBI-HOP's BO object])
-        
+            
         acq_object = acq_params['acq_dictionary']
-    
+            
     else:#if (BO_object == acq_fun_zombihop):
-        
+            
         acq_object = BO_object # TO DO: Korjaa näytteistysfunktioksi! #A
-    
-    #else:
-    #    
-    #    acq_object = None
-    #    Exception('This function has not been implemented for this type of BO.')
-    
+        
+        #else:
+        #    
+        #    acq_object = None
+        #    Exception('This function has not been implemented for this type of BO.')
+        
     return acq_object
 
 def get_acq(x, acq_object, acq_params):
