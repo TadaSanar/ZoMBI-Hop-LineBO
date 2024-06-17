@@ -19,7 +19,7 @@ Install conda environment (this works only if you use conda) either with free pa
 
 Or use the environment file with fixed versions of packages:
 
-`$ conda env create -f environment20240617.yml`
+`$ conda env create -f environment20240617fixedversions.yml`
 
 (Optional: Install Spyder:
 
