@@ -1,0 +1,11 @@
+name: linebo-zombihop-nogpy
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pandas
+  - matplotlib
+  - scikit-optimize
+  - spyder-kernels=2.5
+  - joblib
+prefix: /u/08/atiihone/unix/anaconda3/envs/linebo-zombihop-nogpy
