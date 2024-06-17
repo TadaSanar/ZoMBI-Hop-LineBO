@@ -120,7 +120,7 @@ class ZombiHop:
                                                       emin = lower_bound, emax = upper_bound,
                                                       emin_global = 0, emax_global = 1,
                                                       acq_GP = GP, 
-                                                      acq_type = self.acquisition_type, # Switch between reading acquisition array or using the acquisition function. Use function if "self.acquisition_type", use array if "None".
+                                                      acq_type = self.acquisition_type, # Switch between reading acquisition array or using the acquisition function. Use acquisition function if "self.acquisition_type"; use array if "None".
                                                       acq_n = n, 
                                                       acq_fX_best = Y_BOUNDmemory.min(),
                                                       acq_ratio = self.ratio, 

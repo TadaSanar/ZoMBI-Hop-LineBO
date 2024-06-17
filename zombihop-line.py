@@ -33,6 +33,7 @@ def ackley(x, b=0.5, a=20, c=2*np.pi, limit=15):
 
 def dye(x, assume_ternary = False):
     
+    '''
     if isinstance(x, pd.DataFrame):
         
         if assume_ternary is True:
@@ -54,6 +55,8 @@ def dye(x, assume_ternary = False):
             x3d = x
         
     y = dye_model.predict(x3d)[0]
+    '''
+    y = np.zeros((x.shape[0],1))
     y = np.ravel(y)
     
     return y
@@ -73,11 +76,11 @@ n_init = 2
 model_type = 'dye'
 plot = True
 
-X_init = pd.DataFrame(data = np.random.rand(n_init, N))#np.diversipy.polytope.sample(n_points=100000, lower=lower, upper=upper, thin=0)
+X_init = pd.DataFrame(data = np.random.rand(n_init, N)) #np.diversipy.polytope.sample(n_points=100000, lower=lower, upper=upper, thin=0)
 
 if model_type == 'poisson':
     
-    poisson_model = joblib.load(os.getcwd()+'/../HPER/data/poisson_RF_trained.pkl')
+    poisson_model = joblib.load('./data/poisson_RF_trained.pkl')#os.getcwd()+'/../HPER/data/poisson_RF_trained.pkl')
     poisson_model = poisson_model.predict # call the prediction function
     Y_init = pd.DataFrame(data = poisson_model(X_init), columns = ['y']) # fX dataset
     Y_experimental = poisson_model
@@ -89,7 +92,15 @@ elif model_type == 'ackley':
 
 elif model_type == 'dye':
     
-    dye_model = joblib.load(os.getcwd()+'/./data/3D-6-final-GP-model')
+    if 'GPy' in sys.modules:
+        
+        dye_model = joblib.load(os.getcwd()+'./data/3D-6-final-GP-model')
+        
+    else:
+        
+        print("Dummy model used instead of the GPy dye model.")
+        #raise Exception("Import GPy to use the dye model.")
+        
     Y_init = pd.DataFrame(data = dye(X_init), columns = ['y']) # fX dataset
     Y_experimental = dye
     
@@ -107,13 +118,13 @@ zombi = ZombiHop(seed = seed,                       # A random seed for model re
                  alphas = 10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
                  n_draws_per_activation = 10,       #X / 10 # Number of samples drawn for each zoom-in
                  acquisition_type = LCB_ada,        # acquisition function options: LCB, EI, LCB_ada, EI_abrupt
-                 tolerance = 0.05,                  # Increase tolerance! # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
+                 tolerance = 0.5,                  # 0.05Increase tolerance! # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
                  penalty_width = 0.15,               # Width of penalty region about needle => inhibits BO searching from areas surrounding previously found needles
                  m = 10,                             # Top m-number of data points used to zoom in bounds
                  k = 10,                            # Top k-number of data points to keep
                  lower_bound = np.zeros(N),
                  upper_bound = np.ones(N),#np.array([1,np.sqrt(3)/2]),
-                 resolution = 20,                   # Number for the resolution of the mesh search space, e.g., resolution=10
+                 resolution = 10,                   # 20Number for the resolution of the mesh search space, e.g., resolution=10
                  sampler = line_bo_sampler)#
 
 X_all, Y_all, needle_locs, needles = zombi.run_virtual(verbose = False, plot = plot)

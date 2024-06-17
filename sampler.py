@@ -308,7 +308,7 @@ def search_space_to_nparr(emin, emax, N):
 
 def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model, 
                     emin = 0, emax = 1, emin_global = 0, emax_global = 1,
-                    n_droplets = 3, M = 1, acq_max = False, 
+                    n_droplets = 3, M = 21, acq_max = False, 
                     selection_method = 'integrate_acq', acq_GP = None, 
                     acq_type = None, acq_n = None, acq_fX_best = None, 
                     acq_ratio = None, acq_decay = None, acq_xi = None, 
@@ -333,6 +333,7 @@ def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model,
     K_cand = calc_K(N, M, plotting = False) # TO DO: We could change sampler to an object and calculate K only once.
         
     # The inlet and outlet points of the line for the next round.
+    
     if acq_type is None:
         
         # No acquisition function provided; use acquisition array instead.

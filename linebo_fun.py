@@ -11,6 +11,7 @@ import numpy as np
 import n_sphere
 from itertools import product
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from numpy.linalg import lstsq #, solve
 
 from linebo_wrappers import get_acq, define_acq_object
@@ -242,6 +243,7 @@ def solve_t_matrix_eq(p, K_cand, e):
         
     else:
         
+        # Invert A and solve.
         diag_Ainv_temp = np.reshape(1/diag_A_temp, (-1,1))
         t = diag_Ainv_temp * b_temp
         
@@ -263,10 +265,10 @@ def plot_K_P_in_3D(a, p, title = None, first_point_label = 'K_cand',
                    plot_triangle = True, lims = [-2,2]):
     
     fig = plt.figure()
-    ax = fig.gca(projection='3d')
+    #ax = fig.gca(projection='3d')
+    ax = fig.add_subplot(111, projection='3d')
     ax.view_init(elev=45, azim=60)
     
-    #ax = plt.figure().add_subplot(projection='3d')
     
     ax.set_xlabel('x0')
     ax.set_ylabel('x1')
@@ -276,8 +278,10 @@ def plot_K_P_in_3D(a, p, title = None, first_point_label = 'K_cand',
     ax.set_ylim(lims)
     ax.set_zlim(lims)
     
+    # Plot all points A (or B):
     for i in range(a.shape[0]):
         
+        # Plot a line between point P and (P+A). 
         ax.plot(np.ravel([p[:,0], p[:,0] + a[i,0]]), 
                 np.ravel([p[:,1], p[:,1] + a[i,1]]),
                 np.ravel([p[:,2], p[:,2] + a[i,2]]), c='b',
@@ -319,7 +323,8 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
     Extract the points A and B in cartesian coordinates. They are the points
     where the candidate lines K_cand arrive to and leave from the search space,
     respectively. Points A and B can also be defined with parameter tA and tB
-    in the parameterized form of the line: x = p + k * t.
+    in the parameterized form of the line: x = p + k * tA (or x = p + k * tB, 
+    respectively).
 
     Parameters
     ----------
@@ -362,7 +367,7 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
     # Number of candidate points.
     K = K_cand.shape[0]
     
-    # Solve t_min values for each point k. Ordering: Point 0 dim 0, 
+    # Solve t_min values for each point K_cand. Ordering: Point 0 dim 0, 
     # point 0, dim 1, ... point K dim N.
     tmin = solve_t_matrix_eq(p, K_cand, emin)
     
