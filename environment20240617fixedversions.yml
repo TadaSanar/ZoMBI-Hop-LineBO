@@ -3,9 +3,9 @@ channels:
   - defaults
 dependencies:
   - python=3.12
-  - pandas
-  - matplotlib
-  - scikit-optimize
-  - spyder-kernels=2.5
-  - joblib
+  - pandas>=2.2.2
+  - matplotlib>=3.8.4
+  - scikit-optimize>=0.10.2
+  - spyder-kernels>=2.5
+  - joblib>=1.4.2
 prefix: /u/08/atiihone/unix/anaconda3/envs/linebo-zombihop
