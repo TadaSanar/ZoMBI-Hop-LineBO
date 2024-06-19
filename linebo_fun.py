@@ -303,9 +303,9 @@ def plot_K_P_in_3D(a, p, title = None, first_point_label = 'K_cand',
         
     else:
         
-        ax.plot(np.ravel([p[:,0], 0]), 
-                np.ravel([p[:,1], 0]),
-                np.ravel([p[:,2], -2]), c='k',
+        ax.plot(np.ravel([p[0,0], 0]), 
+                np.ravel([p[0,1], 0]),
+                np.ravel([p[0,2], -2]), c='k',
                 linewidth = 0.5, linestyle = '--')
     label = 'P'
     if show_p_coord is True:

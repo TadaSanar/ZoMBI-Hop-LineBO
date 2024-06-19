@@ -164,7 +164,7 @@ zombi = ZombiHop(seed = seed,                       # A random seed for model re
                  alphas = 10,#10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
                  n_draws_per_activation = 10,#10,       #X / 10 # Number of samples drawn for each zoom-in
                  acquisition_type = LCB_ada,        # acquisition function options: LCB, EI, LCB_ada, EI_abrupt
-                 tolerance = 0.5,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
+                 tolerance = 5,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
                  penalty_width = 0.25,               # Width of penalty region about needle => inhibits BO searching from areas surrounding previously found needles
                  m = 10,                             # Top m-number of data points used to zoom in bounds
                  k = 10,                            # Top k-number of data points to keep
@@ -189,6 +189,8 @@ if model_type is 'dye':
 print('Needle locations: ', needle_locs, '\n')
 
 print('Needle values: ', needles, '\n')
+
+print('For a default Ackley test function, the optimum is at [0.3, 0.3, 0.3] with value of approx. 0. I think there is something wrong with my ZoMBI-Hop settings in this file because we are not seeing the optimum with the current settings.')
 
 if plot == True:
     
