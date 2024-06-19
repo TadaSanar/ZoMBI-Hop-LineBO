@@ -21,6 +21,9 @@ Or use the environment file with fixed versions of packages:
 
 `$ conda env create -f environment20240617fixedversions.yml`
 
+`$ pip install diversipy==0.9`
+`$ pip install n-sphere==1.2.0`
+
 (Optional: Install Spyder:
 
 `$ conda install spyder`)
@@ -33,7 +36,8 @@ Run zombihop-line.py either by starting spyder and running the file, or by:
 
 - The Line-BO functionality is implemented in linebo_fun.py and connected into ZoMBI-Hop via sampler.py.
 - Linebo_XXX.py files are exactly the same versions than in the main repository ( https://github.com/TadaSanar/Line-BO ). In future, these py files will be removed from this repository and installed as links to the Line-BO repository (in other words: avoid modifying linebo_XXX.py and if you do, document the changes carefully).
-- Sampler.py can be changed freely.
+- Sampler.py can be changed freely. 
+
 
 ## TO DO
 
@@ -65,4 +69,9 @@ Line-BO has the constraint feature implemented via linebo_fun.py/choose_K() (set
 There are also some other changes compared to the original ZoMBI-Hop. Ask Armi for details.
 
 The code in general would benefit from testing and benchmarking since it has not been tested as well as the Line-BO with GPyOpt in the main repository ( https://github.com/TadaSanar/Line-BO ).
+
+## Other notes
+
+- RunTimeWarning on line 436 of linebo_fun.py is correct behavior (it occurs whenever P is at a corner of the search space): `linebo_fun.py:436: RuntimeWarning: All-NaN slice encountered; tA = np.nanmax(tAcands, axis = 1, keepdims = True)`
+- Increase the number of Line-BO -related plots by setting `plotting = 'plot_all'` in line 131 of zombihop.py.
 

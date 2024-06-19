@@ -262,7 +262,8 @@ def solve_t_matrix_eq(p, K_cand, e):
     return t
     
 def plot_K_P_in_3D(a, p, title = None, first_point_label = 'K_cand', 
-                   plot_triangle = True, lims = [-2,2]):
+                   plot_triangle = True, lims = [-2,2], show_p_coord = False,
+                   show_a_coord = False):
     
     fig = plt.figure()
     #ax = fig.gca(projection='3d')
@@ -306,11 +307,18 @@ def plot_K_P_in_3D(a, p, title = None, first_point_label = 'K_cand',
                 np.ravel([p[:,1], 0]),
                 np.ravel([p[:,2], -2]), c='k',
                 linewidth = 0.5, linestyle = '--')
-        
+    label = 'P'
+    if show_p_coord is True:
+        label = label + ' ' + str(p)
+    ax.scatter(p[:,0], p[:,1], p[:,2], c = 'k', label=label)
+    
+    label = first_point_label
+    if show_a_coord is True:
+        label = label + ' ' + str(p+a)
     ax.scatter(p[:,0] + a[:,0], p[:, 1] + a[:,1], p[:,2] + a[:,2], c = 'b', 
-               label = first_point_label)
+               label = label)
     #ax.scatter(a2[:,0], a2[:,1], a2[:,2], c = 'r')
-    ax.scatter(p[:,0], p[:,1], p[:,2], c = 'k', label='P')
+    
     
     #ax.set_proj_type('ortho')
     plt.legend()
@@ -421,6 +429,10 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
     # Candidates for the point where the line gets out from the search space:
     tBcands = np.where(tall>0, tall, np.nan)
     # Optimal t values for points A and B:
+    if (np.isnan(tAcands).all() is True) or (np.isnan(tBcands).all() is True):
+        
+        raise Exception('Something wrong with defining A or B candidates!')
+        
     tA = np.nanmax(tAcands, axis = 1, keepdims = True)
     tB = np.nanmin(tBcands, axis = 1, keepdims = True)
     
@@ -460,17 +472,40 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
                 #                b, ", p = ", p, ", K_cand = ", K_cand, ", tA = ",
                 #                tA, ", tB = ", tB)
             
-    
+    '''
     if (N == 3) and (plotting == True):
         
-        plot_K_P_in_3D(K_cand, p, 'Real 3D space', first_point_label = 'K_cand')
-        plot_K_P_in_3D(K_cand-p, p-p, 'P in origo', first_point_label = 'K_cand', 
-                       plot_triangle = False)
-        plot_K_P_in_3D(a-p, p, 'Real 3D space', first_point_label = 'A', lims = [0,1])
-        plot_K_P_in_3D(b-p, p, 'Real 3D space', first_point_label = 'B', lims = [0,1])
+        if constrain_sum_x == False:
+            
+            plot_triangle = False
+            
+        else:
+            
+            plot_triangle = True
+            
+            lims = [-2,2]
+            
+        
+        plot_K_P_in_3D(K_cand, p, 
+                       'Real 3D space\n(K_candidates outside\nthe search space are ok)', 
+                       first_point_label = 'K_cand', 
+                       plot_triangle = plot_triangle)
+        plot_K_P_in_3D(K_cand-p, p-p, 
+                       'Coordinate transfrom\nso that P in origo', 
+                       first_point_label = 'K_cand', plot_triangle = False)
+        plot_K_P_in_3D(a-p, p, 
+                       'Real 3D space\n(A candidates outside\nthe search space are ok)', 
+                       first_point_label = 'A candidates',
+                       plot_triangle = plot_triangle, 
+                       lims = [emin[0,0], emax[0,1]])
+        plot_K_P_in_3D(b-p, p, 
+                       'Real 3D space\n(B candidates outside\nthe search space are ok)', 
+                       first_point_label = 'B candidates',
+                       plot_triangle = plot_triangle,
+                       lims = [emin[0,0], emax[0,1]])
         #print('P: ', p)
         #print('K: ', K_cand-p)
-        
+    '''    
     
     # If any of the points are outside the search space at this point, it means
     # P is on the boundary of the search space and, additionally, there is no t
@@ -478,11 +513,49 @@ def extract_inlet_outlet_points(p, K_cand, emax, emin, M,
     # P is in these cases always in the corner, I think.
     # Let's set t values for those points to zero (per the algo above, "the other
     # point A or B" is already zero, so in practice the line length goes to zero).
-    tA[np.any((a > emax), axis = 1)] = 0
-    tA[np.any((a < emin), axis = 1)] = 0
-    tB[np.any((b > emax), axis = 1)] = 0
-    tB[np.any((b < emin), axis = 1)] = 0
+    if (np.any(np.any((a > emax), axis = 1)) or np.any(np.any((a < emin), axis = 1)) or 
+        np.any(np.any((b > emax), axis = 1)) or np.any(np.any((b < emin), axis = 1))):
+        
+        tA[np.any((a > emax), axis = 1)] = 0
+        tA[np.any((a < emin), axis = 1)] = 0
+        tB[np.any((b > emax), axis = 1)] = 0
+        tB[np.any((b < emin), axis = 1)] = 0
+        
+        # Actual points A and B for each point K.
+        a = p + tA * K_cand
+        b = p + tB * K_cand
     
+    if (N == 3) and (plotting == True):
+        
+        if constrain_sum_x == False:
+            
+            plot_triangle = False
+            
+        else:
+            
+            plot_triangle = True
+            
+            lims = [-2,2]
+            
+        
+        plot_K_P_in_3D(K_cand, p, 
+                       'Real 3D space\n(K_candidates outside\nthe search space are ok)', 
+                       first_point_label = 'K_cand', 
+                       plot_triangle = plot_triangle)
+        plot_K_P_in_3D(K_cand-p, p-p, 
+                       'Coordinate transfrom\nso that P in origo', 
+                       first_point_label = 'K_cand', plot_triangle = False)
+        plot_K_P_in_3D(a-p, p, 
+                       'Real 3D space\n(A candidates outside\nthe search space not ok)', 
+                       first_point_label = 'A candidates',
+                       plot_triangle = plot_triangle, 
+                       lims = [emin[0,0], emax[0,1]])
+        plot_K_P_in_3D(b-p, p, 
+                       'Real 3D space\n(B candidates outside\nthe search space not ok)', 
+                       first_point_label = 'B candidates',
+                       plot_triangle = plot_triangle,
+                       lims = [emin[0,0], emax[0,1]])
+
     '''
     idx0_for_plot = 0
     idx1_for_plot = 1
@@ -617,8 +690,6 @@ def integrate_all_K_over_acqf(p, K_cand, t_starts, t_stops, n_points, acq_object
                                     acq_params = acq_params)
         acq_values_all[[i],:] = acq_values.T
     
-    acq_min_val = np.min(acq_values_all)
-    acq_max_val = np.max(acq_values_all)
     # In GPyOpt, the acquisition values are negative but could be otherwise
     # in other packages.
     
@@ -630,6 +701,9 @@ def integrate_all_K_over_acqf(p, K_cand, t_starts, t_stops, n_points, acq_object
     if acq_max is False:
         acq_values_all = -acq_values_all
     
+    acq_min_val = np.min(acq_values_all)
+    acq_max_val = np.max(acq_values_all)
+
     if acq_max_val != acq_min_val:
        
         acq_values_norm = (acq_values_all - acq_min_val)
@@ -647,7 +721,7 @@ def integrate_all_K_over_acqf(p, K_cand, t_starts, t_stops, n_points, acq_object
 
 def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
              selection_method = 'integrate_acq_line', constrain_sum_x = False,
-             plotting = True, acq_params = None):
+             plotting = 'plot_all', acq_params = None):
     """
     Note that the selection method 'integrate_acq_line' is straightforward
     integration here, so it results in the preference toward longer lines
@@ -697,11 +771,18 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
         DESCRIPTION.
 
     """
-    
+    if plotting == 'plot_all':
+        
+        plotting_cands = True
+        
+    else:
+        
+        plotting_cands = False
+        
     A, B, tA, tB = extract_inlet_outlet_points(p, K_cand = K_cand, emax = emax,
                                        emin = emin, M = M,
                                        constrain_sum_x = constrain_sum_x,
-                                       plotting = plotting)
+                                       plotting = plotting_cands)
     #print('K candidates:\n', K)
     #print('A candidates:\n', A)
     
@@ -721,13 +802,20 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
                                   acq_object = acq_object, 
                                   acq_max = acq_max, acq_params = acq_params)
         
+        if np.sum(np.abs(I_all)) == 0:
+            
+            raise Exception("Something wrong with the acquisition function values or A/B candidates!")
+        
         idx = np.argmax(I_all, axis = 0)
-        print('Mean value of integrals along lines: ', np.mean(I_all), 
+        print('Mean value of integrals along lines: ', np.mean(I_all), ' +- ', np.std(I_all), 
               '\nChosen value of the integral and its index: ', I_all[idx], idx,
-              '\nAll values of the integrals that were compared: ', I_all)
+              #'\nAll values of the integrals that were compared: ', I_all
+              )
         
     elif selection_method == 'random_line':
         
+        # Note: This method can pick also lines of length zero (i.e., A=P and
+        # B=P). Think if this is ok or not.
         idx = np.random.randint(0, A.shape[0])
         
     else:
@@ -739,6 +827,28 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
     tA_sel = tA[idx]
     tB_sel = tB[idx]
     K_sel = K_cand[idx, :]
+    
+    if ((A_sel < emin).any() or (A_sel > emax).any() or 
+        (B_sel < emin).any() or (B_sel > emax).any()) == True:
+        
+        raise Exception("Something wrong with the acquisition function values or A/B candidates!")
+    
+    # Plot the selected A and B if the dimensionality of the search space is three.
+    if (p.shape[1] == 3) and (plotting is not 'plot_none'):
+    
+        plot_K_P_in_3D(A_sel-p, p, 'Real 3D space\n(A selected outside\nthe search space not ok)', 
+                       first_point_label = 'A selected',
+                       plot_triangle = constrain_sum_x, 
+                       lims = [emin[0,0], emax[0,1]],
+                       show_a_coord = True,
+                       show_p_coord = True)
+        plot_K_P_in_3D(B_sel-p, p, 'Real 3D space\n(B selected outside\nthe search space not ok)',
+                       first_point_label = 'B selected',
+                   plot_triangle = constrain_sum_x, 
+                   lims = [emin[0,0], emax[0,1]],
+                   show_a_coord = True,
+                   show_p_coord = True)
+    
     
     return A_sel, B_sel, tA_sel, tB_sel, K_sel
 
@@ -787,8 +897,11 @@ def pick_random_init_data(n_init, N, emax, emin, M, K_cand,
 def compute_x_coords_along_lines(idx_to_compute, N, n_droplets, tA_sel, tB_sel, 
                                p_sel, K_sel):
     
+    # NOTE: Armi edited the shapes of these funs in 6/19/2024. Confirm the
+    # edits did not affect Line-BO repo.
+    
     # idx_to_compute is a list of indices.
-    x_steps = np.empty((len(idx_to_compute), n_droplets, N))
+    x_steps = np.zeros((len(idx_to_compute), n_droplets, N))
     
     for k in range(len(idx_to_compute)):
         
@@ -811,7 +924,8 @@ def compute_x_coords_along_lines(idx_to_compute, N, n_droplets, tA_sel, tB_sel,
                                          axis = 0), (n_droplets, 1)) # Works for arrays and single points.
         
             # Same in cartesian coordinates.
-            x_steps[k,:,:] = p_sel[idx_to_compute[k],:] + t_steps * K_sel[[idx_to_compute[k]],:]
+            x_steps[k,:,:] = p_sel[idx_to_compute[k],:] + t_steps * K_sel[#[idx_to_compute[k]],
+                                                                          :]
             
             # Reshape for the computation purposes.
             x = np.reshape(x_steps, (x_steps.shape[0]*x_steps.shape[1], x_steps.shape[2]))

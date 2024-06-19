@@ -230,7 +230,7 @@ def simulated_batch_BO(n_rounds, n_init, n_droplets, N, target_fun_idx, target_f
 
 if __name__ == "__main__":
     
-    poisson_model = joblib.load(os.getcwd()+'/../data/poisson_RF_trained.pkl')
+    poisson_model = './data/poisson_RF_trained.pkl'
     
     ###############################################################################
     # BO SETTINGS

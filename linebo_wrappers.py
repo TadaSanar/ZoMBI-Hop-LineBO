@@ -185,27 +185,26 @@ def predict_from_BO_object(BO_object, x, unscale_y = True, return_std = False,
     
     return result
 
-def define_acq_object(BO_object, acq_params = None):#, x):
+def define_acq_object(BO_object, acq_params = None):
     """
-    Compute the acquisition function value of the given x datapoint(s) using the given
-    Bayesian optimization object.
+    Return an acquisition function object that is either an acquisition
+    dictionary or a reference to an acquisition function.
 
     Parameters
     ----------
-    BO_object : GPyOpt.methods.BayesianOptimization
+    BO_object : GPyOpt.methods.BayesianOptimization OR a callable OR None
         The Bayesian optimization object that has been initialized and fit with
-        the input data collected this far.
-    x : Numpy array of shape (n_samples, n_dimensions)
-        The x datapoint(s) to predict.
+        the input data collected this far. OR A callable acquisition function.
+        OR None (in which case acq_params are being read).
+    acq_params : Any acquisition function parameters needed.
 
     Returns
     -------
-    y : Numpy array of shape (n_samples, 1)
-        The acquisition function value of x datapoint(s) predicted with BO_object.
+    acq_object : a callable OR a (ZoMBI-Hop acquisition) dictionary
 
     """
     if 'GPyOpt' in sys.modules:
-        
+        #from GPyOpt.methods import BayesianOptimization
         if isinstance(BO_object, GPyOpt.methods.BayesianOptimization):
             
             # TO DO: Is there difference among the two options?
@@ -213,18 +212,28 @@ def define_acq_object(BO_object, acq_params = None):#, x):
             #a = BO_object.acquisition.acquisition_function(x)
             acq_object = BO_object.acquisition.acquisition_function
             
+        else:
+            
+            raise Exception("Not implemented.")
+            
+    # TO DO: Improve this part.
+    # Assume in this case that the given object is a callable that should be
+    # treated as an acquisiton function.
+    # This is the option if ZoMBI-Hop acquisition function is being used.
+    elif ('skopt' in sys.modules) and (callable(BO_object)):
+        
+        acq_object = BO_object
+        
+        # Code structure should be improved so that the BO object is always a
+        # BO object and the reference to the acquisition function is fed in
+        # as a part of acq_params or as another optional argument.
+    
+    # If ZoMBI-Hop acquisition matrix is being used:
     elif (type(acq_params['acq_dictionary']) is dict): # && (type(BO_object) is [type of ZoMBI-HOP's BO object])
             
         acq_object = acq_params['acq_dictionary']
-            
-    else:#if (BO_object == acq_fun_zombihop):
-            
-        acq_object = BO_object # TO DO: Korjaa näytteistysfunktioksi! #A
+    
         
-        #else:
-        #    
-        #    acq_object = None
-        #    Exception('This function has not been implemented for this type of BO.')
         
     return acq_object
 

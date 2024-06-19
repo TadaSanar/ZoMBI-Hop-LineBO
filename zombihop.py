@@ -118,7 +118,8 @@ class ZombiHop:
                     if self.sampler: # if using a sampler, required outputs: X_tell shape = (n,d); Y_tell shape = (n,) for n samples and d dimensions
                         X_tell, Y_tell = self.sampler(X_ask, dimension_meshes, acquisition, self.Y_experimental,
                                                       emin = lower_bound, emax = upper_bound,
-                                                      emin_global = 0, emax_global = 1,
+                                                      emin_global = None, #0,
+                                                      emax_global = None, #1
                                                       acq_GP = GP, 
                                                       acq_type = self.acquisition_type, # Switch between reading acquisition array or using the acquisition function. Use acquisition function if "self.acquisition_type"; use array if "None".
                                                       acq_n = n, 
@@ -126,7 +127,8 @@ class ZombiHop:
                                                       acq_ratio = self.ratio, 
                                                       acq_decay = self.decay, 
                                                       acq_xi = self.xi, 
-                                                      acq_ftype = self.ftype)
+                                                      acq_ftype = self.ftype,
+                                                      plotting = 'plot_few')
                         
                     else:
                         Y_tell = self.Y_experimental(X_ask)
