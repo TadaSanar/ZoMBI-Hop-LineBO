@@ -566,9 +566,9 @@ def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model,
     X_tell = x
     Y_tell = np.ravel(y)
     
-    print("ZoMBI-Hop suggested: \n - Point P=" + str(X_ask) + "\n- emin=" + 
-          str(emin) + "\n- emax=" + str(emax) + "\mLine-BO-suggested points:\n-A=" + 
-          str(A_sel) + "\n-B=" + str(B_sel))
+    print("ZoMBI-Hop suggested: \n - Point P=" + str(X_ask) + "\n - emin=" + 
+          str(emin) + "\n - emax=" + str(emax) + "\nLine-BO-suggested points:\n -A=" + 
+          str(A_sel) + "\n -B=" + str(B_sel))
     
     return X_tell, Y_tell
 

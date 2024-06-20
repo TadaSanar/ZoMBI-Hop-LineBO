@@ -161,10 +161,10 @@ zombi = ZombiHop(seed = seed,                       # A random seed for model re
                  Y_init = Y_init,                   # fX data
                  Y_experimental = Y_experimental,   # model to predict f(X) from X
                  Gammas = 10,                        # Number of hops to other needles
-                 alphas = 1,#10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
+                 alphas = 10,#10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
                  n_draws_per_activation = 10,#10,       #X / 10 # Number of samples drawn for each zoom-in
                  acquisition_type = LCB_ada,        # acquisition function options: LCB, EI, LCB_ada, EI_abrupt
-                 tolerance = 0.3,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
+                 tolerance = 5,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
                  penalty_width = 0.2,               # Width of penalty region about needle => inhibits BO searching from areas surrounding previously found needles
                  m = 5,                             # Top m-number of data points used to zoom in bounds
                  k = 5,                            # Top k-number of data points to keep
