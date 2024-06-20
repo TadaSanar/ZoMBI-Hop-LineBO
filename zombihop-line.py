@@ -18,7 +18,7 @@ import sys
 
 from linebo_plots import calc_3d_from_ternary
 
-def ackley(x, b=0.5, a=20, c=2*np.pi, limit=15, invert = True, 
+def ackley(x, b=0.5, a=20, c=2*np.pi, limit=15, invert = False, 
            shift_opt_from_origo = 0.3):
     """
     Evaluate Ackley or inverted Ackley function value at desired points.
@@ -102,23 +102,23 @@ def dye(x, assume_ternary = False):
     
 
 ####################
+# MAIN SETTINGS - EDIT THESE
 
-
+N = 3 # Number of dimensions in th search space (and in Ackley function if you use that)
+n_init = 2 # Number of initial data points.
+model_type = 'ackley' # Choose one of these: 'ackley', 'poisson', 'dye'
+plot = True # Enable the main result plots (does not affect Line-BO plots)
 
 ####################
 
 
 
-# Construct dataset from model
-N = 3 # 5D Ackley function
-n_init = 2
-model_type = 'ackley'
-plot = True
 
 X_init = pd.DataFrame(data = np.random.rand(n_init, N)) #np.diversipy.polytope.sample(n_points=100000, lower=lower, upper=upper, thin=0)
 
-if model_type == 'poisson':
-    
+if model_type is 'poisson':
+    # TO DO: Loading Poisson RF model or Poisson dataset from ZoMBI repo does not work
+    # due to pickle version issues. Train a new RF model directly from the Poisson data.
     poisson_model_rf = joblib.load('./data/poisson_RF_trained.pkl')#os.getcwd()+'/../HPER/data/poisson_RF_trained.pkl')
     poisson_model = poisson_model_rf.predict # call the prediction function
     Y_init = pd.DataFrame(data = poisson_model(X_init), columns = ['y']) # fX dataset
@@ -160,14 +160,14 @@ zombi = ZombiHop(seed = seed,                       # A random seed for model re
                  X_init = X_init,                   # X data
                  Y_init = Y_init,                   # fX data
                  Y_experimental = Y_experimental,   # model to predict f(X) from X
-                 Gammas = 3,                        # Number of hops to other needles
-                 alphas = 10,#10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
-                 n_draws_per_activation = 10,#10,       #X / 10 # Number of samples drawn for each zoom-in
+                 Gammas = 10,                        # Number of hops to other needles
+                 alphas = 2,#10,                       #(X/N)# Number of ZoMBI zoom-ins for each hop, zooming repeatedly in
+                 n_draws_per_activation = 5,#10,       #X / 10 # Number of samples drawn for each zoom-in
                  acquisition_type = LCB_ada,        # acquisition function options: LCB, EI, LCB_ada, EI_abrupt
-                 tolerance = 5,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
-                 penalty_width = 0.25,               # Width of penalty region about needle => inhibits BO searching from areas surrounding previously found needles
-                 m = 10,                             # Top m-number of data points used to zoom in bounds
-                 k = 10,                            # Top k-number of data points to keep
+                 tolerance = 0.03,                  # Error tolerance of GP prediction, used to end a ZoMBI zoom-in and move to the next needle
+                 penalty_width = 0.2,               # Width of penalty region about needle => inhibits BO searching from areas surrounding previously found needles
+                 m = 5,                             # Top m-number of data points used to zoom in bounds
+                 k = 5,                            # Top k-number of data points to keep
                  lower_bound = np.zeros(N),
                  upper_bound = np.ones(N),#np.array([1,np.sqrt(3)/2]),
                  resolution = 20,                   # 20Number for the resolution of the mesh search space, e.g., resolution=10
@@ -176,7 +176,7 @@ zombi = ZombiHop(seed = seed,                       # A random seed for model re
 X_all, Y_all, needle_locs, needles = zombi.run_virtual(verbose = False, plot = plot)
 
 
-if model_type is 'dye':
+if model_type == 'dye':
     
     # A "3D" case constrained into a 2D triangle (ternary search space) can
     # also be defined as a 2D case (done above in the dye model definition step).
@@ -215,7 +215,7 @@ if plot == True:
     plt.legend(['Discovered Needles'])
     plt.show()
     
-    if model_type is 'poisson':
+    if model_type == 'poisson':
         
         # Zoomed-in y axes in the plots-
         

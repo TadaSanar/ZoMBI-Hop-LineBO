@@ -74,4 +74,5 @@ The code in general would benefit from testing and benchmarking since it has not
 
 - RunTimeWarning on line 436 of linebo_fun.py is correct behavior (it occurs whenever P is at a corner of the search space): `linebo_fun.py:436: RuntimeWarning: All-NaN slice encountered; tA = np.nanmax(tAcands, axis = 1, keepdims = True)`
 - Increase the number of Line-BO -related plots by setting `plotting = 'plot_all'` in line 131 of zombihop.py.
+- There are more plotting functions in linebo_plots.py if needed.
 

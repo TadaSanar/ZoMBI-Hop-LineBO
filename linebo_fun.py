@@ -13,6 +13,7 @@ from itertools import product
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from numpy.linalg import lstsq #, solve
+import warnings
 
 from linebo_wrappers import get_acq, define_acq_object
 
@@ -831,7 +832,18 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
     if ((A_sel < emin).any() or (A_sel > emax).any() or 
         (B_sel < emin).any() or (B_sel > emax).any()) == True:
         
-        raise Exception("Something wrong with the acquisition function values or A/B candidates!")
+        message = ("The selected A or B seem to be outside the current search" +
+                   " space boundary. The most common for this to happen is that " +
+                   "the BO-suggested point P is outside the search space " +
+                   "boundaries, which then propagates to A or B. The current " +
+                   "points and values are:\n" +
+                   "- emin: " + str(emin) + "\n" +
+                   "- emax: " + str(emax) + "\n" +
+                   "- P: " + str(p) + "\n" +
+                   "- A: " + str(A_sel) + "\n" +
+                   "- B: " + str(B_sel) + "\n")
+        
+        raise Exception(message)
     
     # Plot the selected A and B if the dimensionality of the search space is three.
     if (p.shape[1] == 3) and (plotting is not 'plot_none'):
