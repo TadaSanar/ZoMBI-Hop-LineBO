@@ -506,6 +506,12 @@ def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model,
     # Ensure search space boundaries are provided as a 2D numpy array. 
     emin, emax = search_space_to_nparr(emin, emax, X_ask.shape[1])
     
+    # NOTE
+    # This is where emin and emax could be increased by a marging of numerical
+    # error to make sure the P points are always strictly inside the search
+    # space boundaries.
+    
+    
     # Ensure search space boundaries are provided as a 2D numpy array.
     # (The global boundaries are disregarded in the rest of the code if None.)
     if emin_global is not None:
@@ -559,6 +565,10 @@ def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model,
     
     X_tell = x
     Y_tell = np.ravel(y)
+    
+    print("ZoMBI-Hop suggested: \n - Point P=" + str(X_ask) + "\n- emin=" + 
+          str(emin) + "\n- emax=" + str(emax) + "\mLine-BO-suggested points:\n-A=" + 
+          str(A_sel) + "\n-B=" + str(B_sel))
     
     return X_tell, Y_tell
 

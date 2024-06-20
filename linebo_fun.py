@@ -846,7 +846,7 @@ def choose_K(BO_object, p, K_cand, emax = 1, emin = 0, M = 2, acq_max = True,
         raise Exception(message)
     
     # Plot the selected A and B if the dimensionality of the search space is three.
-    if (p.shape[1] == 3) and (plotting is not 'plot_none'):
+    if (p.shape[1] == 3) and (plotting != 'plot_none'):
     
         plot_K_P_in_3D(A_sel-p, p, 'Real 3D space\n(A selected outside\nthe search space not ok)', 
                        first_point_label = 'A selected',
