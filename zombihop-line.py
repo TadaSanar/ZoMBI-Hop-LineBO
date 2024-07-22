@@ -104,7 +104,7 @@ def dye(x, assume_ternary = False):
 ####################
 # MAIN SETTINGS - EDIT THESE
 
-N = 3 # Number of dimensions in th search space (and in Ackley function if you use that)
+N = 3 # Number of dimensions in the search space. Note that the search space dimensionality needs to match your test case (e.g., Poisson materials test case consists of 6-dimensional data so we need N = 6 here).
 n_init = 2 # Number of initial data points.
 model_type = 'ackley' # Choose one of these: 'ackley', 'poisson', 'dye'
 plot = True # Enable the main result plots (does not affect Line-BO plots)
@@ -113,22 +113,35 @@ plot = True # Enable the main result plots (does not affect Line-BO plots)
 
 
 
-
+# Randomly located initial sampling is used instead of the polytope sampling in order to facilitate benchmarking.
 X_init = pd.DataFrame(data = np.random.rand(n_init, N)) #np.diversipy.polytope.sample(n_points=100000, lower=lower, upper=upper, thin=0)
 
 if model_type == 'poisson':
-    # TO DO: Loading Poisson RF model or Poisson dataset from ZoMBI repo does not work
-    # due to pickle version issues. Train a new RF model directly from the Poisson data.
+
+
+    # TO DO: Loading the Poisson random forest model or Poisson dataset from the main ZoMBI-Hop repo does not work
+    # because this repository uses a newer version of pickle/dill package. Solution: Ask for the Poisson data or the model
+    # from Aleks and save it with the same version of dill/pickle than we use in this repository.
     poisson_model_rf = joblib.load('./data/poisson_RF_trained.pkl')#os.getcwd()+'/../HPER/data/poisson_RF_trained.pkl')
-    poisson_model = poisson_model_rf.predict # call the prediction function
-    Y_init = pd.DataFrame(data = poisson_model(X_init), columns = ['y']) # fX dataset
+    
+    # ZoMBI-Hop will call the prediction function of the "ground truth" model to collect more data.
+    poisson_model = poisson_model_rf.predict
     Y_experimental = poisson_model
+    
+    # Create a dataframe with the initial data. Compatible with ZomBI-Hop.
+    Y_init = pd.DataFrame(data = poisson_model(X_init), columns = ['y']) # fX dataset
+    
+    # NOTE: Poisson test case works only with 6-dimensional search space! We need N = 6.
 
 elif model_type == 'ackley':
 
-    Y_init = pd.DataFrame(data = (ackley(X_init.values)), columns = ['y']) # fX dataset
+    # ZoMBI-Hop will call the Ackley function to collect more data.
     Y_experimental = ackley
     
+    # Create a dataframe with the initial data. Compatible with ZomBI-Hop.
+    Y_init = pd.DataFrame(data = (ackley(X_init.values)), columns = ['y']) # fX dataset
+    
+    # Plot an example of the Ackley function to demonstrate the user how the test case looks.
     x_grid, y_grid = np.meshgrid(np.arange(0,1,0.05), np.arange(0,1,0.05))
     plt.figure()
     plt.scatter(x_grid, y_grid, c = ackley(np.transpose([x_grid, y_grid])))
@@ -138,6 +151,9 @@ elif model_type == 'ackley':
 
 elif model_type == 'dye':
     
+    # The dye test case uses a Gaussian process regression model created with GPy package as the "ground truth" function.
+    
+    # Load the model only if GPy package has been isntalled to the current environment. Else, use a dummy model that does not really do anything. 
     if 'GPy' in sys.modules:
         
         dye_model = joblib.load('./data/3D-6-final-GP-model')
@@ -145,14 +161,14 @@ elif model_type == 'dye':
     else:
         
         dye_model = None
-        print("Dummy model used instead of the GPy dye model.")
-        
-    Y_init = pd.DataFrame(data = dye(X_init), columns = ['y']) # fX dataset
+        print("Dummy model used instead of the dye test case ground truth model. This is done because the dye model requires GPy package to be installed. Install GPy if you want to use the dye test case.")
+    
+    # ZoMBI-Hop will call the prediction function of the "ground truth" model to collect more data.
     Y_experimental = dye
     
-#Y_init = pd.DataFrame(poisson_model(np.array(X_init)), columns = Y.columns.values)
-
-
+    # Create a dataframe with the initial data. Compatible with ZomBI-Hop.
+    Y_init = pd.DataFrame(data = dye(X_init), columns = ['y']) # fX dataset
+    
 seed = np.random.seed(1) # seed for repeatability
 
 # Run ZoMBI
