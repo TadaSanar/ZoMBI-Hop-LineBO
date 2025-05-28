@@ -18,7 +18,7 @@ import communication
 
 #sys.path.append('./../Line-BO/HPER')
 
-from linebo_fun import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_all_K_over_acqf, choose_K
+from linebo_fun_aleks import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_all_K_over_acqf, choose_K
 
 #poisson_model = joblib.load(os.getcwd()+'/../data/poisson_RF_trained.pkl')
 
@@ -477,7 +477,10 @@ def choose_K_acq_zombihop(acq_params,
 
     # Which acquisition‐wrapper to call (or None for array‐based acquisitions)
     acq_fun = acq_fun_zombihop if acq_params['acq_type'] else None
-
+    
+    '''
+    # Subsampling not needed here anymore because K_cands should be defined
+    # so that the matrix is not huge.
     # 1) SUBSAMPLE if huge
     K_total = K_cand.shape[0]
     if K_total > max_candidates:
@@ -485,11 +488,13 @@ def choose_K_acq_zombihop(acq_params,
     else:
         idxs = np.arange(K_total)
     K_sub = K_cand[idxs]
-
+    '''
+    K_sub = K_cand
+    
     # 2) COMPUTE all inlet/outlet points for subset
     A_sub, B_sub, tA_sub, tB_sub = extract_inlet_outlet_points(
         p, K_cand=K_sub, emax=emax, emin=emin, M=M,
-        constrain_sum_x=False, plotting=plotting
+        constrain_sum_x=True, plotting=plotting
     )
 
     # 3) INTEGRATE acquisition on each line
@@ -761,7 +766,7 @@ def search_space_to_nparr(emin, emax, N):
 # Store the second best prediction in the cache to use in DiSCO to prevent backlog
 def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model, 
                     emin=0, emax=1, emin_global=0, emax_global=1,
-                    n_droplets=30, M=21, acq_max=False, 
+                    n_droplets=30, M=2, acq_max=False, 
                     selection_method='integrate_acq_line', acq_GP=None, 
                     acq_type=None, acq_n=None, acq_fX_best=None, 
                     acq_ratio=None, acq_decay=None, acq_xi=None, 
@@ -777,7 +782,9 @@ def line_bo_sampler(X_ask, x_acquisitions, acquisitions, model,
         )
 
     N = X_ask.shape[1]
-    K_cand = calc_K(N, M, plotting=False)
+    K_cand = calc_K(N, M, constrain_sum_x=True, plotting=plotting, 
+                    generate_randomly=True, max_candidates=max_candidates, 
+                    random_generation_type='cartesian',p=X_ask)
 
     # 2) build acq_params dict
     if acq_type is None:
