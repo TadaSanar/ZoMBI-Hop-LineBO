@@ -149,6 +149,7 @@ class ZombiHop:
                                                       emin = lower_bound, emax = upper_bound,
                                                       n_droplets = n_droplets,
                                                       M = n_vectors,
+                                                      acq_max=True,
                                                       emin_global = None, #0,
                                                       emax_global = None, #1
                                                       acq_GP = GP, 
@@ -159,7 +160,7 @@ class ZombiHop:
                                                       acq_decay = self.decay, 
                                                       acq_xi = self.xi, 
                                                       acq_ftype = self.ftype,
-                                                      plotting = 'plot_few')
+                                                      plotting = False)#'plot_few')
                         print('ending sampler')
                     else:
                         Y_tell = self.Y_experimental(X_ask)
