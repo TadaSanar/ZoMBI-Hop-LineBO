@@ -33,15 +33,34 @@ def run_zombi_main():
     n_droplets = 30 # number of droplets to predict
     ####################
 
-    # Get random initial compositions, each row sums to 1
+    # Get random initial compositions, the elements of x sum to 1
     X_init = np.random.dirichlet(np.ones(D), size=n_droplets)
     # if you want 3-decimals:
     X_init = np.round(X_init, 3)
     # and fix the last column
     X_init[:, -1] = 1.0 - X_init[:, :-1].sum(axis=1)
+    
+    # TO DO: Generate one initial line. Partially implemented here, not ready.
+    ## Get one random initial composition, the elements of x sum to 1
+    #X_init = np.random.dirichlet(np.ones(D), size=1)
+    ## if you want 3-decimals:
+    #X_init = np.round(X_init, 3)
+    ## and fix the last column
+    #X_init[:, -1] = 1.0 - X_init[:, :-1].sum(axis=1)
+    ## Pick one line spanning the point above randomly from the search space with
+    ## the unit sphere logic (one can also use random_generation_type='cartesian';
+    ## in that case provide also p=X_init).
+    #K_init = calc_K(D, M=2, constrain_sum_x=True, plotting=True, 
+    #                generate_randomly=True, max_candidates=1,
+    #                random_generation_type='spherical')#,
+    #                #p=X_init)
+    # TO DO: Use function pick_random_init_data() in linebo_fun.py to extract
+    # the actual lines. Armi did not have time to check that the function still
+    # works. Also TO DO: The dirichlet generation and calc_K could be moved to
+    # inside that function.
+    
     X_init = pd.DataFrame(X_init)
-
-
+    
     # DUMMY Y EXPERIMENTAL FOR X_INIT
     Y_init = pd.DataFrame(np.random.uniform(1,4.5, size=X_init.shape[0]))
 
