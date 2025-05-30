@@ -83,7 +83,7 @@ def transform_to_Nplusone_dim(cart_coords_low_dim):
     # conditions of sum(x_i)=1.
     cart_coords = np.matmul(cart_coords_low_dim, eigenvecs_subspace_new)
 
-    print('K candidates after transform to actual dimensionality: ', cart_coords)
+    #print('K candidates after transform to actual dimensionality: ', cart_coords)
 
     if np.isclose(np.sqrt(np.sum(cart_coords**2)), 1, atol=0.02) is False:
 

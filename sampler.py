@@ -18,7 +18,7 @@ import communication
 
 #sys.path.append('./../Line-BO/HPER')
 
-from linebo_fun_aleks import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_all_K_over_acqf, choose_K
+from linebo_fun import extract_inlet_outlet_points, compute_x_coords_along_lines, calc_K, integrate_all_K_over_acqf, choose_K
 
 #poisson_model = joblib.load(os.getcwd()+'/../data/poisson_RF_trained.pkl')
 
