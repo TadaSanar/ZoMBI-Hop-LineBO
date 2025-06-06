@@ -74,9 +74,9 @@ class ZombiHop:
         GP = utils.reset_GP(self.X_init, self.Y_init)  # initialize the first GP model
         lower_bound = self.lower_bound # initialize bounds based on user-selection
         upper_bound = self.upper_bound # initialize bounds based on user-selection
-        full_mesh = utils.bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # full, un-zoomed mesh. This will not be updated
+        full_mesh = utils.simplex_bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # full, un-zoomed mesh. This will not be updated
         print(full_mesh.shape[0]*full_mesh.shape[1])
-        dimension_meshes = utils.bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # mesh that will dynamically zoom in each iteration
+        dimension_meshes = utils.simplex_bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # mesh that will dynamically zoom in each iteration
         penalty_mask = np.ones((dimension_meshes.shape[0], 1)).astype(self.ftype)  # init penalty mask as all ones => has no multiplicative effect
         X_intermediate, Y_intermediate, X_all, Y_all, X_GPmemory, Y_GPmemory, X_BOUNDmemory, Y_BOUNDmemory, X_final, Y_final, needles, needle_locs = utils.initialize_arrays(self.X_init, self.Y_init)
         m_bias = 0 # bias to selecting m-best points for creating the bounds. Increasing the bias slides the window towards worse performing points to generate different boundary when no higher-perfoming points exist
@@ -236,7 +236,7 @@ class ZombiHop:
                 lower_bound = np.min(X_BOUNDmemory.iloc[top_m, :], axis=0)  # get all dim lower bounds from M points.
                 upper_bound = np.max(X_BOUNDmemory.iloc[top_m, :], axis=0)  # get all dim upper bounds from M points
                 # compute new bounds for ZoMBI
-                dimension_meshes = utils.bounded_mesh(X_BOUNDmemory.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # zoom in and update search mesh
+                dimension_meshes = utils.simplex_bounded_mesh(X_BOUNDmemory.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # zoom in and update search mesh
                 # ======================#
 
             # keep track of all data points, including all pruned points => append intermediate points before pruning. X,Y_all are not used in ZoMBI, only for record keeping and plotting
