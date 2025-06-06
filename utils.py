@@ -98,6 +98,35 @@ def bounded_mesh(dims, lower_bound, upper_bound, ftype, resolution=10):
     return np.array(list(itertools.product(*dim_array)))
 
 
+def simplex_bounded_mesh(dims, lower_bound, upper_bound, ftype, resolution=10):
+    """
+    Cartesian grid → simplex projection.
+
+    1. Build a regular cube grid inside [lower, upper]^D (end-points dropped).
+    2. Project every point onto the unit simplex (components ≥0, sum = 1).
+    3. Remove duplicates introduced by the projection.
+
+    Returns
+    -------
+    mesh : (N, dims) ndarray – every row satisfies x.sum() == 1.
+    """
+    # --- cube grid ----------------------------------------------------------
+    grids = []
+    for d in range(dims):
+        lb, ub = lower_bound[d], upper_bound[d]
+        pts = np.linspace(lb, ub, resolution + 2, dtype=ftype)[1:-1]
+        grids.append(pts)
+
+    cube = np.array(list(itertools.product(*grids)), dtype=ftype)
+
+    # --- project each point onto the simplex --------------------------------
+    mesh = np.vstack([project_simplex(row) for row in cube]).astype(ftype)
+
+    # drop duplicates caused by projection
+    mesh = np.unique(mesh, axis=0)
+    return mesh
+
+
 def m_norm(X):
     '''
     multi-dimensional normalization, takes pd dataframe as input.

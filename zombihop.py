@@ -70,6 +70,7 @@ class ZombiHop:
     def run_experimental(self, n_droplets, n_vectors, verbose = False, plot = True):
         # === INITIALIZATION ===#
         random.seed(self.seed)
+        np.random.seed(self.seed)
         GP = utils.reset_GP(self.X_init, self.Y_init)  # initialize the first GP model
         lower_bound = self.lower_bound # initialize bounds based on user-selection
         upper_bound = self.upper_bound # initialize bounds based on user-selection
