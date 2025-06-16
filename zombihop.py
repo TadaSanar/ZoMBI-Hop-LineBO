@@ -67,16 +67,17 @@ class ZombiHop:
         self.xi = 0.1
 
 
-    def run_experimental(self, n_droplets, n_vectors, verbose = False, plot = True):
+    def run_experimental(self, n_droplets, n_vectors, delta = 1e-6, verbose = False, plot = True):
         # === INITIALIZATION ===#
         random.seed(self.seed)
         np.random.seed(self.seed)
+        best_so_far = np.inf
         GP = utils.reset_GP(self.X_init, self.Y_init)  # initialize the first GP model
         lower_bound = self.lower_bound # initialize bounds based on user-selection
         upper_bound = self.upper_bound # initialize bounds based on user-selection
         full_mesh = utils.simplex_bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # full, un-zoomed mesh. This will not be updated
         print(full_mesh.shape[0]*full_mesh.shape[1])
-        dimension_meshes = utils.simplex_bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # mesh that will dynamically zoom in each iteration
+        dimension_meshes = full_mesh.copy()
         penalty_mask = np.ones((dimension_meshes.shape[0], 1)).astype(self.ftype)  # init penalty mask as all ones => has no multiplicative effect
         X_intermediate, Y_intermediate, X_all, Y_all, X_GPmemory, Y_GPmemory, X_BOUNDmemory, Y_BOUNDmemory, X_final, Y_final, needles, needle_locs = utils.initialize_arrays(self.X_init, self.Y_init)
         m_bias = 0 # bias to selecting m-best points for creating the bounds. Increasing the bias slides the window towards worse performing points to generate different boundary when no higher-perfoming points exist
@@ -89,7 +90,7 @@ class ZombiHop:
             prune = True  # set prune to true again, attempt another zoom-in
 
             for alpha in range(self.alphas):  # number of ZoMBI activations
-                print(f'\n    Activate ZoMBI . . . ({alpha + 1}/{self.alphas})')
+                print(f'\nActivate ZoMBI . . . ({alpha + 1}/{self.alphas})')
 
                 # === CREATE PENALTY MASK ===#
                 # for every round of ZoMBI, create a new penalty mask using the previously stored needle values
@@ -100,7 +101,7 @@ class ZombiHop:
                     if plot:
                         utils.plot_penalty_dist(penalty_mask, lower_bound, upper_bound)
                 if np.sum(~penalty_mask.astype(bool)) / len(penalty_mask) >= 0.9:  # if the bounded area is penalized,by more than 90%, then zoom out and do not prune memory
-                    print('Bounded region is over 90% penalized. Zooming out.')
+                    #print('Bounded region is over 90% penalized. Zooming out.')
                     prune = False  # do not prune if region is fully penalized and cannot zoom in => must keep sampling
                     m_bias += 1  # update sliding m-best point selector bias. Will shift window for m-best points when creating zooming bounds
                     break
@@ -138,9 +139,10 @@ class ZombiHop:
                     # 3) apply your 1-D penalty mask
                     mask    = penalty_mask.ravel()   # shape (n_pts,)
                     acq_mask = acq_flat * mask       # still shape (n_pts,)
-
+                
                     # 4) pick the best index and ask point
                     best_idx = int(np.argmax(acq_mask))
+                    utils.check_line_consistency(acq_mask, best_idx)
                     X_ask    = dimension_meshes[best_idx, :].reshape(1, -1)
 
                     # tell the model what experiments were created
@@ -167,7 +169,8 @@ class ZombiHop:
                         Y_tell = self.Y_experimental(X_ask)
                         X_tell = X_ask
 
-                    print('OBJECETIVES: ', Y_tell)
+
+                    #print('OBJECETIVES: ', Y_tell)
 
                     # # check posterior of surrogate with Y_tell, only check best performer of Y_tell
                     # Y_tell_min = np.min(Y_tell) # get minimum Y_tell
@@ -178,6 +181,11 @@ class ZombiHop:
 
                     # 1) Find your experimental best index exactly as before
                     Y_tell_min = np.min(Y_tell)
+                    if abs(best_so_far-Y_tell_min)<delta:
+                        print("Algorithm has converged with delta = {delta}, exited.")
+                        return X_all, Y_all, needle_locs, needles
+                    else:
+                        best_so_far = Y_tell_min
                     best_idx   = int(np.argmin(Y_tell))
 
                     # 2) Batch-predict the entire droplet set at once
@@ -190,10 +198,11 @@ class ZombiHop:
                     # 4) Reset X_tell_min for downstream code (shape (1, D))
                     X_tell_min = X_tell[best_idx].reshape(1, -1)
 
-
+                    
 
                     # compute error between surrogate posterior and "experimental"
-                    error = np.abs(Y_tell_min - ymodel)/np.abs(Y_tell_min)
+                    eps = 1e-12
+                    error = np.abs(Y_tell_min - ymodel)/np.abs(Y_tell_min+eps)
                     error_list.append(error)
 
                     # get "experimental" measurements from the BO prediction for X and Y
@@ -223,7 +232,7 @@ class ZombiHop:
                     if np.sum(np.array(error_list[-3:]) <= self.tolerance) >= 3:
                         break
                 # break inner loop if we have found a needle.
-                if np.sum(np.array(error_list[-3:]) <= self.tolerance) >= 3:
+                if len(error_list)>=5 and np.sum(np.array(error_list[-5:]) <= self.tolerance) ==5:
                     print('\nFound a needle!')
                     needles = pd.concat([needles, Y_intermediate[-1:]])
                     needle_locs = pd.concat([needle_locs, X_intermediate[-1:]])
@@ -237,6 +246,7 @@ class ZombiHop:
                 upper_bound = np.max(X_BOUNDmemory.iloc[top_m, :], axis=0)  # get all dim upper bounds from M points
                 # compute new bounds for ZoMBI
                 dimension_meshes = utils.simplex_bounded_mesh(X_BOUNDmemory.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # zoom in and update search mesh
+                penalty_mask = np.ones((dimension_meshes.shape[0], 1)).astype(self.ftype)
                 # ======================#
 
             # keep track of all data points, including all pruned points => append intermediate points before pruning. X,Y_all are not used in ZoMBI, only for record keeping and plotting
@@ -247,7 +257,7 @@ class ZombiHop:
                 print(f'\nPruning memory and zooming out. Keep top k={self.k} points\n')
                 # prune memory, keep only the top k-number of data points
                 #         prior_n = len(Y_final) # number of data points present in data set from prior iteration
-                X_pruned, Y_pruned = utils.memory_prune(self.k, self.tolerance, X_intermediate, Y_intermediate)
+                X_pruned, Y_pruned = utils.memory_prune_best_recent(self.k, self.tolerance, X_intermediate, Y_intermediate)
                 # update final df
                 X_final = pd.concat([X_final, X_pruned], ignore_index=True)
                 Y_final = pd.concat([Y_final, Y_pruned], ignore_index=True)
@@ -267,5 +277,6 @@ class ZombiHop:
             lower_bound = np.zeros(self.X_init.shape[1])
             upper_bound = np.ones(self.X_init.shape[1])
             dimension_meshes = full_mesh  # reset search bounds
+            penalty_mask = np.ones((dimension_meshes.shape[0], 1)).astype(self.ftype)
 
         return X_all, Y_all, needle_locs, needles

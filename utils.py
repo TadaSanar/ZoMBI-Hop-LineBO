@@ -15,8 +15,8 @@ def memory_prune(k, tolerance, X_updated, Y_updated):
     # Prune memory after each set of needle-finding zoom ins. Keep only the top k-number of points
     Y_new = np.array(Y_updated.copy()).reshape(-1) # only grab new values generated this iteration
     X_new = np.array(X_updated.copy())
-#     Y_new = np.array(Y_updated[prior_n:].copy()).reshape(-1) # only grab new values generated this iteration
-#     X_new = np.array(X_updated[prior_n:].copy())
+    # Y_new = np.array(Y_updated[prior_n:].copy()).reshape(-1) # only grab new values generated this iteration
+    # X_new = np.array(X_updated[prior_n:].copy())
     top_k = []
     top_kX = []
     while len(top_k) < k:
@@ -34,6 +34,45 @@ def memory_prune(k, tolerance, X_updated, Y_updated):
     df_kX = pd.DataFrame(top_kX, columns = X_updated.columns.values)[::-1] # convert to df
     df_k = pd.DataFrame(top_k, columns = Y_updated.columns.values)[::-1] # convert to df
     return df_kX, df_k
+
+def memory_prune_best_recent(k_best: int,
+                             r_recent: int,
+                             X_memory: pd.DataFrame,
+                             Y_memory: pd.DataFrame) -> tuple[pd.DataFrame,
+                                                             pd.DataFrame]:
+    """
+    Keep the top-`k_best` performers **plus** the most-recent `r_recent`
+    points (even if they are mediocre).  This preserves the local “shape”
+    while staying cheap.
+
+    Parameters
+    ----------
+    k_best   : how many global best points to retain
+    r_recent : how many of the newest points to keep untouched
+    """
+    # --- 1. grab recent ----------------------------------------------------
+    if r_recent > 0:
+        X_recent = X_memory.tail(r_recent)
+        Y_recent = Y_memory.tail(r_recent)
+    else:
+        X_recent = X_recent.iloc[0:0]   # empty DF with right columns
+        Y_recent = Y_recent.iloc[0:0]
+
+    # --- 2. global best (exclude those recent rows first) -----------------
+    remaining = Y_memory.iloc[:-r_recent] if r_recent else Y_memory
+    if len(remaining):
+        top_idx = np.argsort(remaining.values.reshape(-1))[:k_best]
+        X_best  = X_memory.iloc[top_idx]
+        Y_best  = remaining.iloc[top_idx]
+    else:
+        X_best = X_recent.iloc[0:0]
+        Y_best = Y_recent.iloc[0:0]
+
+    # --- 3. concatenate & drop dups ---------------------------------------
+    X_keep = pd.concat([X_best, X_recent]).drop_duplicates(ignore_index=True)
+    Y_keep = pd.concat([Y_best, Y_recent]).drop_duplicates(ignore_index=True)
+
+    return X_keep, Y_keep
 
 
 def create_penalty_mask(needle_locs, dimension_meshes, ftype, penalty_width):
@@ -124,7 +163,29 @@ def simplex_bounded_mesh(dims, lower_bound, upper_bound, ftype, resolution=10):
 
     # drop duplicates caused by projection
     mesh = np.unique(mesh, axis=0)
-    return mesh
+    return mesh.astype(ftype)
+
+def check_line_consistency(acq_vector: np.ndarray,
+                           chosen_idx: int,
+                           atol: float = 1e-10) -> None:
+    """
+    Fast sanity-check that the droplet you are about to print
+    (index = chosen_idx) has the maximum acquisition value on the line.
+
+    Raises
+    ------
+    AssertionError  if another entry beats the chosen one by > atol.
+    """
+    best_idx = int(np.argmax(acq_vector))
+    best_val = float(acq_vector[best_idx])
+    chosen_val = float(acq_vector[chosen_idx])
+
+    if best_idx != chosen_idx and best_val - chosen_val > atol:
+        raise AssertionError(
+            f"[Line check] Droplet #{chosen_idx} chosen, "
+            f"but droplet #{best_idx} has higher acquisition "
+            f"({chosen_val:.3g} < {best_val:.3g})."
+        )
 
 
 def m_norm(X):

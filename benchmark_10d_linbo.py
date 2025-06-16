@@ -25,52 +25,77 @@ from acquisitions import LCB_ada
 from sampler import line_bo_sampler
 
 
-def ackley10(x: np.ndarray) -> np.ndarray:
-    """10‑D Ackley (global minimum at 0 when x in [0,1]^10)."""
+
+def ackley10_simplex(x: np.ndarray) -> np.ndarray:
+    """
+    Ackley where the global minimum (≈0) sits at the centre of the D-simplex,
+    i.e.  x* = (1/D,…,1/D) with Σx_i = 1.
+    """
     a, b, c = 20.0, 0.2, 2 * np.pi
-    d = x.shape[1]
-    sum_sq = np.sum((x - 0.5) ** 2, axis=1) * 4  # centre the well at 0.5
-    sum_cos = np.sum(np.cos(c * (x - 0.5)), axis=1)
-    fx = a + np.e - a * np.exp(-b * np.sqrt(sum_sq / d)) - np.exp(sum_cos / d)
+    d       = x.shape[1]
+
+    centre  = np.full(d, 1.0 / d, dtype=x.dtype)
+    y       = x - centre
+
+    sum_sq  = np.sum(y ** 2, axis=1)
+    sum_cos = np.sum(np.cos(c * y), axis=1)
+
+    fx = a + np.e \
+         - a * np.exp(-b * np.sqrt(sum_sq / d)) \
+         - np.exp(sum_cos / d)
     return fx.reshape(-1, 1)
 
-
-def multiwell_ackley(x: np.ndarray, extra_wells: int = 2, depth: float = 5.0) -> np.ndarray:
-    """Ackley with additional Gaussian wells of varying depths.
+def multiwell_ackley10_simplex(
+    x:           np.ndarray,
+    extra_wells: int        = 2,
+    depths:      float | np.ndarray = 5.0,
+    width:       float      = 0.07,
+    seed:        int        = 42,
+) -> np.ndarray:
+    """
+    Ackley-on-simplex plus `extra_wells` Gaussian wells of specified `depths`.
 
     Parameters
     ----------
-    x           : (n,10) array on simplex
-    extra_wells : how many secondary wells to add (random centres)
-    depth       : depth (positive) of those wells relative to baseline Ackley
+    x           : (n, D) points on the simplex.
+    extra_wells : number of secondary minima to add.
+    depths      : scalar or array-like of length `extra_wells`; deeper ⇒ lower.
+    width       : shared Gaussian width (L2 σ) of those wells.
+    seed        : RNG seed for deterministic well locations.
+
+    Returns
+    -------
+    f(x)        : (n, 1) array of objective values (lower is better).
     """
-    base = ackley10(x).ravel()
-    rng = np.random.default_rng(42)
+    base   = ackley10_simplex(x).ravel()
 
-    # fixed random centres for reproducibility
+    # RNG for reproducible secondary-well centres
+    rng     = np.random.default_rng(seed)
     centres = rng.dirichlet(np.ones(x.shape[1]), size=extra_wells)
-    widths = 0.1  # shared width in L2 norm
 
-    penalty = np.zeros_like(base)
-    for c in centres:
+    # broadcast depths → array[extra_wells]
+    depths  = np.broadcast_to(np.asarray(depths, dtype=x.dtype), extra_wells)
+
+    bonus   = np.zeros_like(base)
+    for c, dpth in zip(centres, depths):
         dist2 = np.sum((x - c) ** 2, axis=1)
-        penalty -= depth * np.exp(-dist2 / (2 * widths ** 2))
+        bonus -= dpth * np.exp(-dist2 / (2 * width ** 2))
 
-    return (base + penalty).reshape(-1, 1)
+    return (base + bonus).reshape(-1, 1)
 
 
-def dirichlet_init(D: int, n_pts: int, seed: int):
+def dirichlet_init(obj_fun, D: int, n_pts: int, seed: int):
     rng = np.random.default_rng(seed)
     X = rng.dirichlet(np.ones(D), size=n_pts)
     X = np.round(X, 3)
     X[:, -1] = 1.0 - X[:, :-1].sum(axis=1)  # enforce simplex exactly
-    Y = np.zeros((n_pts, 1))
+    Y = obj_fun(X)
     return pd.DataFrame(X), pd.DataFrame(Y)
 
 
 def run_one_objective(obj_fun, label: str, args):
     D = 10
-    X_init, Y_init = dirichlet_init(D, args.init_pts, args.seed)
+    X_init, Y_init = dirichlet_init(obj_fun, D, args.init_pts, args.seed)
 
     zombi = ZombiHop(
         seed=args.seed,
@@ -81,8 +106,8 @@ def run_one_objective(obj_fun, label: str, args):
         alphas=args.alphas,
         n_draws_per_activation=args.draws,
         acquisition_type=LCB_ada,
-        tolerance=0.9,
-        penalty_width=0.3,
+        tolerance=0.15,
+        penalty_width=0.1,
         m=5,
         k=5,
         lower_bound=np.zeros(D),
@@ -91,47 +116,29 @@ def run_one_objective(obj_fun, label: str, args):
         sampler=None,
     )
 
-    best_hist = []
-    time_hist = []
     t0 = time.perf_counter()
-
-    orig_progress = utils.progress_bar  # type: ignore
-
-    def pb(n, T, inc):
-        val = orig_progress(n, T, inc)
-        # record after every experiment
-        if n % 1 == 0:
-            best_hist.append(float(zombi.Y_init.min()))
-            time_hist.append(time.perf_counter() - t0)
-        return val
-
-    utils.progress_bar = pb
-
-    zombi.run_experimental(
+    X_all, Y_all, *_ = zombi.run_experimental(
         n_droplets=args.draws,
         n_vectors=args.n_vectors,
         verbose=False,
         plot=False,
     )
 
-    best_hist = np.asarray(best_hist)
-    time_hist = np.asarray(time_hist)
+    best_hist = np.minimum.accumulate(Y_all.values.ravel())
+    time_hist = np.linspace(0, time.perf_counter() - t0, len(best_hist))
 
-    # Plot convergence
     plt.figure(figsize=(6, 4))
     plt.plot(best_hist, lw=1.5)
     plt.xlabel("number of experiments")
     plt.ylabel("best objective (lower is better)")
     plt.title(f"Convergence – {label}")
     plt.grid(True)
-    fname = Path(f"convergence_{label}.png")
-    plt.savefig(fname, dpi=150, bbox_inches="tight")
+    plt.savefig(Path(f"convergence_{label}.png"), dpi=150, bbox_inches="tight")
     plt.close()
 
-    # Plot wall‑clock
     plt.figure(figsize=(6, 4))
     plt.plot(time_hist, best_hist, lw=1.5)
-    plt.xlabel("wall‑clock time [s]")
+    plt.xlabel("wall-clock time [s]")
     plt.ylabel("best objective")
     plt.title(f"Time vs Experiments – {label}")
     plt.grid(True)
@@ -139,6 +146,7 @@ def run_one_objective(obj_fun, label: str, args):
     plt.close()
 
     print(f"Saved plots for {label}")
+
 
 
 def parse_args():
@@ -158,12 +166,12 @@ def main():
     args = parse_args()
 
     # 1) Baseline single‑well Ackley
-    run_one_objective(ackley10, "ackley_single", args)
+    run_one_objective(ackley10_simplex, "ackley_single", args)
 
     # 2) Multi‑well variant
     if args.wells > 0:
         def obj(x):
-            return multiwell_ackley(x, extra_wells=args.wells)
+            return multiwell_ackley10_simplex(x, extra_wells=args.wells)
         run_one_objective(obj, f"ackley_{args.wells}wells", args)
 
 
