@@ -25,7 +25,6 @@ from acquisitions import LCB_ada
 from sampler import line_bo_sampler
 
 
-
 def ackley10_simplex(x: np.ndarray) -> np.ndarray:
     """
     Ackley where the global minimum (≈0) sits at the centre of the D-simplex,
@@ -48,8 +47,8 @@ def ackley10_simplex(x: np.ndarray) -> np.ndarray:
 def multiwell_ackley10_simplex(
     x:           np.ndarray,
     extra_wells: int        = 2,
-    depths:      float | np.ndarray = 5.0,
-    width:       float      = 0.07,
+    depths:      float | np.ndarray = 0,
+    width:       float      = 0.15,
     seed:        int        = 42,
 ) -> np.ndarray:
     """
@@ -164,16 +163,13 @@ def parse_args():
 
 def main():
     args = parse_args()
-
-    # 1) Baseline single‑well Ackley
-    run_one_objective(ackley10_simplex, "ackley_single", args)
-
-    # 2) Multi‑well variant
+    
     if args.wells > 0:
         def obj(x):
-            return multiwell_ackley10_simplex(x, extra_wells=args.wells)
+            return multiwell_ackley10_simplex(x, depths=np.linspace(5, 5*args.wells, num=args.wells), extra_wells=args.wells)
         run_one_objective(obj, f"ackley_{args.wells}wells", args)
-
+    else:
+        run_one_objective(ackley10_simplex, "ackley_single", args)
 
 if __name__ == "__main__":
     main()

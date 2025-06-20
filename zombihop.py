@@ -181,11 +181,12 @@ class ZombiHop:
 
                     # 1) Find your experimental best index exactly as before
                     Y_tell_min = np.min(Y_tell)
-                    if abs(best_so_far-Y_tell_min)<delta:
-                        print("Algorithm has converged with delta = {delta}, exited.")
-                        return X_all, Y_all, needle_locs, needles
-                    else:
-                        best_so_far = Y_tell_min
+                    
+                    # if abs(best_so_far-Y_tell_min)<delta:
+                    #     print("Algorithm has converged with delta = {delta}, exited.")
+                    #     return X_all, Y_all, needle_locs, needles
+                    # else:
+                    #     best_so_far = Y_tell_min
                     best_idx   = int(np.argmin(Y_tell))
 
                     # 2) Batch-predict the entire droplet set at once
@@ -232,7 +233,7 @@ class ZombiHop:
                     if np.sum(np.array(error_list[-3:]) <= self.tolerance) >= 3:
                         break
                 # break inner loop if we have found a needle.
-                if len(error_list)>=5 and np.sum(np.array(error_list[-5:]) <= self.tolerance) ==5:
+                if np.sum(np.array(error_list[-3:]) <= self.tolerance) >= 3:
                     print('\nFound a needle!')
                     needles = pd.concat([needles, Y_intermediate[-1:]])
                     needle_locs = pd.concat([needle_locs, X_intermediate[-1:]])
@@ -257,7 +258,7 @@ class ZombiHop:
                 print(f'\nPruning memory and zooming out. Keep top k={self.k} points\n')
                 # prune memory, keep only the top k-number of data points
                 #         prior_n = len(Y_final) # number of data points present in data set from prior iteration
-                X_pruned, Y_pruned = utils.memory_prune_best_recent(self.k, self.tolerance, X_intermediate, Y_intermediate)
+                X_pruned, Y_pruned = utils.memory_prune(self.k, self.tolerance, X_intermediate, Y_intermediate)
                 # update final df
                 X_final = pd.concat([X_final, X_pruned], ignore_index=True)
                 Y_final = pd.concat([Y_final, Y_pruned], ignore_index=True)

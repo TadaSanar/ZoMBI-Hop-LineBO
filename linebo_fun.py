@@ -18,7 +18,7 @@ import warnings
 from linebo_wrappers import get_acq, define_acq_object
 
 
-def test_constraint(x, upper_lim=1, lower_lim=0.995):
+def test_constraint(x, upper_lim=1.005, lower_lim=0.995):
 
     xsum = np.sum(x, axis=1)
 
@@ -27,7 +27,7 @@ def test_constraint(x, upper_lim=1, lower_lim=0.995):
         result = True
 
     else:
-
+        print(x)
         result = False
 
     return result
