@@ -25,62 +25,51 @@ from acquisitions import LCB_ada
 from sampler import line_bo_sampler
 
 
-def ackley10_simplex(x: np.ndarray) -> np.ndarray:
+def ackley10_simplex(x: np.ndarray, a=20.0, b=0.2) -> np.ndarray:
     """
-    Ackley where the global minimum (≈0) sits at the centre of the D-simplex,
-    i.e.  x* = (1/D,…,1/D) with Σx_i = 1.
+    Standard Ackley shifted onto the D-simplex (Σxᵢ = 1) with adjustable
+    parameters `a`, `b`.  Global minimiser is x* = (1/D,…,1/D).
     """
-    a, b, c = 20.0, 0.2, 2 * np.pi
-    d       = x.shape[1]
-
-    centre  = np.full(d, 1.0 / d, dtype=x.dtype)
-    y       = x - centre
+    c      = 2 * np.pi
+    d      = x.shape[1]
+    centre = np.full(d, 1.0 / d, dtype=x.dtype)
+    y      = x - centre
 
     sum_sq  = np.sum(y ** 2, axis=1)
     sum_cos = np.sum(np.cos(c * y), axis=1)
 
-    fx = a + np.e \
-         - a * np.exp(-b * np.sqrt(sum_sq / d)) \
-         - np.exp(sum_cos / d)
+    fx = a + np.e               \
+       - a * np.exp(-b * np.sqrt(sum_sq / d)) \
+       -     np.exp(      sum_cos / d)
     return fx.reshape(-1, 1)
 
-def multiwell_ackley10_simplex(
-    x:           np.ndarray,
-    extra_wells: int        = 2,
-    depths:      float | np.ndarray = 0,
-    width:       float      = 0.15,
-    seed:        int        = 42,
-) -> np.ndarray:
+
+def multiwell_ackley10_simplex(x: np.ndarray,
+                               a            = 20.0,
+                               b            = 0.2,
+                               extra_wells  = 2,
+                               depths       = 5.0,
+                               width        = 0.15,
+                               seed         = 42) -> np.ndarray:
     """
-    Ackley-on-simplex plus `extra_wells` Gaussian wells of specified `depths`.
+    Ackley-on-simplex (with the given a,b) + `extra_wells` Gaussian wells.
 
-    Parameters
-    ----------
-    x           : (n, D) points on the simplex.
-    extra_wells : number of secondary minima to add.
-    depths      : scalar or array-like of length `extra_wells`; deeper ⇒ lower.
-    width       : shared Gaussian width (L2 σ) of those wells.
-    seed        : RNG seed for deterministic well locations.
-
-    Returns
-    -------
-    f(x)        : (n, 1) array of objective values (lower is better).
+    • `depths` can be a scalar or a 1-D array of length `extra_wells`.
+    • `width` is the shared L2 σ of the wells.
     """
-    base   = ackley10_simplex(x).ravel()
+    base = ackley10_simplex(x, a=a, b=b).ravel()
 
-    # RNG for reproducible secondary-well centres
-    rng     = np.random.default_rng(seed)
-    centres = rng.dirichlet(np.ones(x.shape[1]), size=extra_wells)
+    rng      = np.random.default_rng(seed)
+    centres  = rng.dirichlet(np.ones(x.shape[1]), size=extra_wells)
 
-    # broadcast depths → array[extra_wells]
-    depths  = np.broadcast_to(np.asarray(depths, dtype=x.dtype), extra_wells)
-
-    bonus   = np.zeros_like(base)
-    for c, dpth in zip(centres, depths):
-        dist2 = np.sum((x - c) ** 2, axis=1)
-        bonus -= dpth * np.exp(-dist2 / (2 * width ** 2))
+    depths   = np.broadcast_to(np.asarray(depths, dtype=x.dtype), extra_wells)
+    bonus    = np.zeros_like(base)
+    for cen, dep in zip(centres, depths):
+        dist2 = np.sum((x - cen) ** 2, axis=1)
+        bonus -= dep * np.exp(-dist2 / (2 * width ** 2))
 
     return (base + bonus).reshape(-1, 1)
+
 
 
 def dirichlet_init(obj_fun, D: int, n_pts: int, seed: int):
@@ -92,66 +81,65 @@ def dirichlet_init(obj_fun, D: int, n_pts: int, seed: int):
     return pd.DataFrame(X), pd.DataFrame(Y)
 
 
-def run_one_objective(obj_fun, label: str, args):
+def run_one(obj_fun, label, args):
     D = 10
     X_init, Y_init = dirichlet_init(obj_fun, D, args.init_pts, args.seed)
 
     zombi = ZombiHop(
-        seed=args.seed,
-        X_init=X_init,
-        Y_init=Y_init,
-        Y_experimental=obj_fun,
-        Gammas=args.gammas,
-        alphas=args.alphas,
-        n_draws_per_activation=args.draws,
-        acquisition_type=LCB_ada,
-        tolerance=0.15,
-        penalty_width=0.1,
-        m=5,
-        k=5,
-        lower_bound=np.zeros(D),
-        upper_bound=np.ones(D),
-        resolution=args.res,
-        sampler=None,
+        seed              = args.seed,
+        X_init            = X_init,
+        Y_init            = Y_init,
+        Y_experimental    = obj_fun,
+        Gammas            = args.gammas,
+        alphas            = args.alphas,
+        n_draws_per_activation = args.draws,
+        acquisition_type  = LCB_ada,
+        tolerance         = 0.15,
+        penalty_width     = 0.1,
+        m                 = 5,
+        k                 = 5,
+        lower_bound       = np.zeros(D),
+        upper_bound       = np.ones(D),
+        resolution        = args.res,
+        sampler           = None,
     )
 
     t0 = time.perf_counter()
     X_all, Y_all, *_ = zombi.run_experimental(
-        n_droplets=args.draws,
-        n_vectors=args.n_vectors,
-        verbose=False,
-        plot=False,
+        n_droplets = args.draws,
+        n_vectors  = args.n_vectors,
+        verbose    = False,
+        plot       = False,
     )
-
     best_hist = np.minimum.accumulate(Y_all.values.ravel())
     time_hist = np.linspace(0, time.perf_counter() - t0, len(best_hist))
 
-    plt.figure(figsize=(6, 4))
+    outdir = Path("./results")
+    outdir.mkdir(exist_ok=True)
+
+    plt.figure(figsize=(6,4))
     plt.plot(best_hist, lw=1.5)
-    plt.xlabel("number of experiments")
-    plt.ylabel("best objective (lower is better)")
+    plt.xlabel("experiments");  plt.ylabel("best f(x)")
     plt.title(f"Convergence – {label}")
     plt.grid(True)
-    plt.savefig(Path(f"convergence_{label}.png"), dpi=150, bbox_inches="tight")
+    plt.savefig(outdir / f"convergence_{label}.png",
+                dpi=150, bbox_inches="tight")
     plt.close()
 
-    plt.figure(figsize=(6, 4))
+    plt.figure(figsize=(6,4))
     plt.plot(time_hist, best_hist, lw=1.5)
-    plt.xlabel("wall-clock time [s]")
-    plt.ylabel("best objective")
+    plt.xlabel("wall-clock [s]");  plt.ylabel("best f(x)")
     plt.title(f"Time vs Experiments – {label}")
     plt.grid(True)
-    plt.savefig(Path(f"time_{label}.png"), dpi=150, bbox_inches="tight")
+    plt.savefig(outdir / f"time_{label}.png",
+                dpi=150, bbox_inches="tight")
     plt.close()
-
-    print(f"Saved plots for {label}")
-
-
+    print(f"✓  saved plots for {label}")
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--wells", type=int, default=0, help="number of extra wells in custom Ackley")
-    p.add_argument("--init-pts", type=int, default=30)
+    p.add_argument("--init-pts", type=int, default=50)
     p.add_argument("--gammas", type=int, default=10)
     p.add_argument("--alphas", type=int, default=10)
     p.add_argument("--draws", type=int, default=10)
@@ -163,13 +151,27 @@ def parse_args():
 
 def main():
     args = parse_args()
-    
-    if args.wells > 0:
-        def obj(x):
-            return multiwell_ackley10_simplex(x, depths=np.linspace(5, 5*args.wells, num=args.wells), extra_wells=args.wells)
-        run_one_objective(obj, f"ackley_{args.wells}wells", args)
-    else:
-        run_one_objective(ackley10_simplex, "ackley_single", args)
+
+    for a_val in [5,10,20,30,50]:
+        for b_val in [0.1,0.2,0.5,1]:
+            # multiwell benchmark
+            if args.wells > 0:
+                run_one(lambda x, a=a_val, b=b_val:
+                            multiwell_ackley10_simplex(
+                                x, a=a, b=b,
+                                extra_wells=args.wells,
+                                depths=np.linspace(5, 5*args.wells, num=args.wells)),
+                        label=f"ackleyMW{args.wells}_a{a_val}_b{b_val}",
+                        args=args)
+                
+            # single well benchmark
+            else: 
+                run_one(lambda x, a=a_val, b=b_val:
+                            ackley10_simplex(x, a=a, b=b),
+                        label=f"ackley_a{a_val}_b{b_val}",
+                        args=args)
+
+
 
 if __name__ == "__main__":
     main()
