@@ -89,6 +89,9 @@ class ZombiHop:
             error_list = []  # create error list for each zoom-in to determine deviation of model prediction versus "experimental"
             prune = True  # set prune to true again, attempt another zoom-in
 
+            print(f'  [sizes @start]  X_GPmemory={len(X_GPmemory):4d}, '
+                  f'X_BOUNDmemory={len(X_BOUNDmemory):4d}, '
+                  f'X_final={len(X_final):4d}, X_all={len(X_all):4d}')
             for alpha in range(self.alphas):  # number of ZoMBI activations
                 print(f'\nActivate ZoMBI . . . ({alpha + 1}/{self.alphas})')
 
@@ -273,6 +276,13 @@ class ZombiHop:
                 Y_BOUNDmemory = self.Y_init.copy()
                 # reset the bias to selecting m-best points for creating the bounds
                 m_bias = 0
+                print(f'  [sizes @prune]  X_GPmemory={len(X_GPmemory):4d}, '
+                      f'X_BOUNDmemory={len(X_BOUNDmemory):4d}, '
+                      f'X_final={len(X_final):4d}, X_all={len(X_all):4d}')
+            else:
+                print(f'  [sizes @noprune]  X_GPmemory={len(X_GPmemory):4d}, '
+                      f'X_BOUNDmemory={len(X_BOUNDmemory):4d}, '
+                      f'X_final={len(X_final):4d}, X_all={len(X_all):4d}')
 
             # Zoom back out to find other needles by resetting bounds
             lower_bound = np.zeros(self.X_init.shape[1])
