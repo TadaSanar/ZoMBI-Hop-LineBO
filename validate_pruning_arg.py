@@ -19,9 +19,8 @@ from new_zombihop import ZoMBIHop
 from acquisitions import LCB_ada
 from benchmark_10d_linbo import multiwell_ackley10_simplex, dirichlet_init
 
-D, GAMMAS, RESOLUTION = 10, 10, 3
-BASE_OBJ = lambda x: multiwell_ackley10_simplex(
-                        x, depths=[5,10,15,20,25], extra_wells=5)
+D, GAMMAS, RESOLUTION = 10, 2, 3
+BASE_OBJ = lambda x: multiwell_ackley10_simplex(x, depths=[5,10,15,20,25], extra_wells=5, width=0.05, seed=1)
 
 def make_line_objective(base_fun, n_experiments=10):
     """Wrap a point objective → LineBO batch objective."""
@@ -49,7 +48,7 @@ def run_once(k_keep: int, ax=None, seed: int = 1) -> tuple[np.ndarray, float]:
         tolerance          = 0.06,
         resolution         = RESOLUTION,
         num_experiments    = 10,
-        linebo_num_lines   = 11,
+        linebo_num_lines   = 50,
         bounds             = [(0.,1.)]*D,
     )
 
@@ -71,7 +70,7 @@ def run_once(k_keep: int, ax=None, seed: int = 1) -> tuple[np.ndarray, float]:
 
 
 if __name__ == "__main__":
-    ks        = [5, 10, 20, 30, 100]
+    ks        = [10, 20, 30, 50, 100]
     fig, ax   = plt.subplots(figsize=(6,4))
 
     runtimes  = [run_once(k, ax=ax, seed=10)[1] for k in ks]
@@ -82,7 +81,7 @@ if __name__ == "__main__":
     ax.set_title("Pruning comparison")
     ax.grid(True);  ax.legend(title="max_gp_points")
     fig.tight_layout()
-    fig.savefig("pruning_comparison.png", dpi=150)
+    fig.savefig("new_pruning_comparison.png", dpi=150)
     plt.show()
 
 

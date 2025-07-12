@@ -781,6 +781,12 @@ class ZoMBIHop:
                 # call linebo_sampler function - returns arrays of actual experimental points and values using linebo sampling
                 x_actual_array, y_actual_array = self.linebo_sampler(x_ask)
 
+                if y_actual_array.size == 0:          # everything was penalised
+                    if verbose:
+                        print("🛑 All sampled points were in penalty regions, "
+                            "skipping this iteration.")
+                    continue
+
                 # Check convergence using the entire batch of experimental points
                 # This is much more robust than using a single point
                 converged = self._check_batch_convergence(x_actual_array, y_actual_array)

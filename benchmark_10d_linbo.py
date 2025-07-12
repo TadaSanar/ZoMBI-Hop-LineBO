@@ -30,9 +30,9 @@ def ackley10_simplex(x: np.ndarray, a=20., b=0.2) -> np.ndarray:
     return fx.reshape(-1, 1)
 
 
-def multiwell_ackley10_simplex(x: np.ndarray, a=20., b=0.2,
-                               extra_wells=2, depths=5., width=0.2, seed=42):
-    base = ackley10_simplex(x, a=a, b=b).ravel()
+def multiwell_ackley10_simplex(x: np.ndarray, depths,
+                               extra_wells=2, width=0.2, seed=42):
+    base = ackley10_simplex(x).ravel()
     rng  = np.random.default_rng(seed)
     centres = rng.dirichlet(0.05*np.ones(x.shape[1]), size=extra_wells)
 
@@ -44,7 +44,6 @@ def multiwell_ackley10_simplex(x: np.ndarray, a=20., b=0.2,
     return bonus.reshape(-1, 1)
 
 
-# ------------------------------------------------------------------
 def dirichlet_init(obj_fun, D: int, n_pts: int, seed: int):
     rng = np.random.default_rng(seed+1)
     X   = rng.dirichlet(0.05*np.ones(D), size=n_pts)
@@ -52,7 +51,7 @@ def dirichlet_init(obj_fun, D: int, n_pts: int, seed: int):
     return X, Y.ravel()
 
 
-def run_one(obj_fun, label, args):
+def run_one(obj_fun, label, args, k=30):
     D                      = 10
     X_init, Y_init         = dirichlet_init(obj_fun, D, args.init_pts, args.seed)
     n_experiments          = args.draws
@@ -70,7 +69,7 @@ def run_one(obj_fun, label, args):
         X_init_actual        = X_init,
         Y_init               = Y_init,
         num_activations      = args.gammas,
-        max_gp_points        = 30,
+        max_gp_points        = k,
         tolerance            = 0.06,
         resolution           = args.res,
         num_experiments      = n_experiments,
@@ -118,27 +117,35 @@ def parse_args():
     p.add_argument("--res",        type=int, default=3)
     p.add_argument("--n-vectors",  type=int, default=50)
     p.add_argument("--seed",       type=int, default=42)
+    p.add_argument("--vprune",     type=int, default=0)
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    for a_val in [10, 20, 50]:
-        for b_val in [0.1, 0.2, 0.5]:
+    if args.vprune==1:
+        for k in [10,30,50,100,200]:
+            run_one(lambda x: multiwell_ackley10_simplex(
+                        x, width=0.05,
+                        extra_wells=5,
+                        depths=np.linspace(5, 25, 5)),
+                    label=f"ackleyMW5_k={k}", args=args, k=k)
+    else:
+        if args.wells > 0:   # multi-well variant
+            for width in [0.05,0.1,0.2,0.3,0.5]:
+                run_one(lambda x: multiwell_ackley10_simplex(
+                            x, width=width,
+                            extra_wells=args.wells,
+                            depths=np.linspace(5, 5*args.wells, args.wells)),
+                        label=f"ackleyMW{args.wells}_width{width}", args=args)
 
-            if args.wells > 0:   # multi-well variant
-                run_one(lambda x, a=a_val, b=b_val:
-                            multiwell_ackley10_simplex(
-                                x, a=a, b=b,
-                                extra_wells=args.wells,
-                                depths=np.linspace(5, 5*args.wells, args.wells)),
-                        label=f"ackleyMW{args.wells}_a{a_val}_b{b_val}", args=args)
-
-            else:                # single-well (standard) Ackley
-                run_one(lambda x, a=a_val, b=b_val:
+        else:  
+            for a_val in [10, 20, 50]:
+                for b_val in [0.1, 0.2, 0.5]:
+                    run_one(lambda x, a=a_val, b=b_val:
                             ackley10_simplex(x, a=a, b=b),
-                        label=f"ackley_a{a_val}_b{b_val}", args=args)
+                            label=f"ackley_a{a_val}_b{b_val}", args=args)
 
 
 if __name__ == "__main__":
