@@ -1,10 +1,14 @@
 import pandas as pd
 import numpy as np
 import sys
+import time
+import GPy
 import itertools
 import matplotlib.pyplot as plt
 from skopt.learning import GaussianProcessRegressor
 from skopt.learning.gaussian_process.kernels import ConstantKernel, Matern
+from sklearn.kernel_approximation import RBFSampler
+from sklearn.linear_model    import BayesianRidge
 
 
 def memory_prune(k, tolerance, X_updated, Y_updated):
@@ -33,25 +37,65 @@ def memory_prune(k, tolerance, X_updated, Y_updated):
 
 
 def create_penalty_mask(needle_locs, dimension_meshes, ftype, penalty_width):
-    # find tolerance ranges across needle X-locations, use the 1-vector for more consistent and reliable scaling
-    tol = np.abs((penalty_width * np.ones(3))).astype(ftype)
-    X_upper = ((np.array(needle_locs) + tol).astype(ftype)).T
-    X_lower = ((np.array(needle_locs) - tol).astype(ftype)).T
-    # create binary mask, where zeros are penalty values
-        # do logical AND (np.all) for all d-dimensions that fall within tolerance range => will be value of 1 if fall within tolerance
-        # do logical OR (np.any) for all Gamma-number of needles => will set to 1 if a mesh value is penalized by either needle
-        # take complement (~) to convert value 1 to value 0 => penalized mesh values should zero out acquisition value multiplicatively
-    penalty_mask = (~np.any(np.all((dimension_meshes[:,:,None] <= X_upper[None, :, :]) & (dimension_meshes[:,:,None] >= X_lower[None, :, :]), axis=1), axis=1)).astype(int).astype(ftype).reshape(-1,1)
+    """
+    needle_locs: (n_needles, D) array or DataFrame
+    dimension_meshes: (N_mesh, D) array
+    penalty_width: scalar
+    """
+    # Determine D from the mesh (or needle_locs)
+    D = dimension_meshes.shape[1]
+
+    # Build a D-vector of tolerances
+    tol = np.abs(penalty_width * np.ones(D, dtype=ftype))
+
+    # Convert needle_locs into a (n_needles, D) array
+    Xn = np.array(needle_locs, dtype=ftype)  # shape (n_needles, D)
+
+    # Upper & lower bounding planes for every needle
+    X_upper = (Xn + tol).T  # shape (D, n_needles)
+    X_lower = (Xn - tol).T
+
+    # Now for every mesh point we check: is it outside the tol-tube?
+    # dimension_meshes is (N_mesh, D).  We want a mask of shape (N_mesh,1).
+    inside_any = np.any(
+        np.all((dimension_meshes[:, :, None] >= X_lower[None, :, :]) &
+               (dimension_meshes[:, :, None] <= X_upper[None, :, :]),
+               axis=1),
+        axis=1
+    )
+    # penalty_mask is 1 where *no* needle penalizes
+    penalty_mask = (~inside_any).astype(ftype).reshape(-1, 1)
     return penalty_mask
 
 
+
+# def bounded_mesh(dims, lower_bound, upper_bound, ftype, resolution=10):
+#     # Compute GP within bounds
+#     dim_array = []
+#     for d in range(dims):
+#         dim_array.append(np.linspace(lower_bound[d], upper_bound[d], resolution, dtype=ftype))
+#     dimension_meshes = np.array(list(itertools.product(*dim_array)))
+#     return dimension_meshes
+
+
 def bounded_mesh(dims, lower_bound, upper_bound, ftype, resolution=10):
-    # Compute GP within bounds
+    """
+    Generate a grid of points strictly inside [lower_bound, upper_bound]^dims
+    by dropping the exact endpoints, so no BO ask ever lands on a corner.
+    """
     dim_array = []
     for d in range(dims):
-        dim_array.append(np.linspace(lower_bound[d], upper_bound[d], resolution, dtype=ftype))
-    dimension_meshes = np.array(list(itertools.product(*dim_array)))
-    return dimension_meshes
+        lb, ub = lower_bound[d], upper_bound[d]
+        # create resolution+2 linearly spaced pts, then drop first/last
+        if resolution >= 2:
+            pts = np.linspace(lb, ub, resolution+2, dtype=ftype)[1:-1]
+        else:
+            # fallback: really just the midpoint
+            pts = np.array([(lb+ub)/2], dtype=ftype)
+        dim_array.append(pts)
+
+    # cartesian product
+    return np.array(list(itertools.product(*dim_array)))
 
 
 def m_norm(X):
@@ -79,27 +123,6 @@ def bounded_LHS(N, min_vector, max_vector):
     return np.vstack(samples)
 
 
-#def reset_GP(X, Y):
-#    # Construct GP model
-#    matern_hyper_tuned = ConstantKernel(1, constant_value_bounds='fixed') * Matern(length_scale=1,
-#                                                                                   length_scale_bounds='fixed', nu=1)
-#    GP = GaussianProcessRegressor(kernel=matern_hyper_tuned, n_restarts_optimizer=30, alpha=0.001, normalize_y=True)
-#    GP.fit(X, Y)  # Fit data to GP
-#    return GP
-
-
-#def GP_pred(X, GP_model, dtype):
-#    '''
-#    Predict f(X) means and standard deviations from data using GP.
-#    :param X:           Input dataset, (n,d) array
-#    :param GP_model:    GP regressor model
-#    :param dtype:       Data type to convert to, used for memory efficiency
-#    :return:            Predicted posterior means and standard deviations
-#    '''
-#    mean, std = GP_model.predict(X, return_std=True)
-#    return mean.astype(dtype), std.astype(dtype).reshape(-1, 1)  # convert to memory-efficient datatype
-
-
 def project_simplex(v):
     """
     Project a point onto the simplex with a constraint that sum equals 1 and all components are non-negative.
@@ -120,40 +143,68 @@ def project_simplex(v):
         w = np.maximum(v - theta, 0)
         return w
 
-def reset_GP(X, Y):
-    # Project data onto simplex
-    if isinstance(X, pd.DataFrame):
-        
-        X_projected_np = np.array([project_simplex(x) for x in X.values])
-        X_projected = X.copy()
-        X_projected.iloc[:,:] = X_projected_np
-        
-    else:
-        
-        X_projected = np.array([project_simplex(x) for x in X])
 
-    # Construct GP model
-    matern_hyper_tuned = ConstantKernel(1, constant_value_bounds='fixed') * Matern(length_scale=1,
-                                                                                   length_scale_bounds='fixed', nu=1)
-    GP = GaussianProcessRegressor(kernel=matern_hyper_tuned, n_restarts_optimizer=30, alpha=0.001, normalize_y=True)
-    GP.fit(X_projected, Y)  # Fit data to GP
-    return GP
+def reset_GP(X, Y):
+    """
+    Build and return a full (non-sparse) GaussianProcessRegressor,
+    projecting inputs onto the simplex first.
+    
+    Inputs:
+      X : (n, d) array or pd.DataFrame
+      Y : (n, 1) array-like or pd.DataFrame
+    Output:
+      A fitted sklearn GaussianProcessRegressor.
+    """
+    # 1) Project X onto the simplex
+    if isinstance(X, pd.DataFrame):
+        Xp = np.vstack([project_simplex(row) for row in X.values])
+    else:
+        arr = np.asarray(X)
+        Xp = np.vstack([project_simplex(row) for row in arr])
+    
+    # 2) Coerce Y into shape (n, 1)
+    Yarr = np.asarray(Y).reshape(-1, 1)
+    
+    # 3) Build and fit the GP
+    kernel = ConstantKernel(1.0, constant_value_bounds="fixed") * \
+             Matern(length_scale=1.0, length_scale_bounds="fixed", nu=1.0)
+    gp = GaussianProcessRegressor(
+        kernel=kernel,
+        n_restarts_optimizer=30,
+        alpha=1e-3,
+        normalize_y=True,
+    )
+    gp.fit(Xp, Yarr)
+    return gp
+
 
 def GP_pred(X, GP_model, dtype):
-    # Project data onto simplex
+    """
+    Predict posterior mean and std from the full GP, projecting X onto
+    the simplex first. Returns:
+      mean: (n,) array of dtype
+      std:  (n,1) array of dtype
+    """
+    # 1) Coerce into numpy array of shape (n, d)
     if isinstance(X, pd.DataFrame):
-        
-        X_projected_np = np.array([project_simplex(x) for x in X.values])
-        X_projected = X.copy()
-        X_projected.iloc[:,:] = X_projected_np
-        
+        arr = X.values
     else:
-        
-        X_projected = np.array([project_simplex(x) for x in X])
-
-    # Predict f(X) means and standard deviations from data using GP.
-    mean, std = GP_model.predict(X_projected, return_std=True)
-    return mean.astype(dtype), std.astype(dtype).reshape(-1, 1)  # convert to memory-efficient datatype
+        arr = np.asarray(X)
+    if arr.ndim == 1:
+        arr = arr.reshape(1, -1)
+    
+    # 2) Project onto simplex
+    Xp = np.vstack([project_simplex(row) for row in arr])
+    
+    # 3) Predict
+    print("starting GP")
+    mean, std = GP_model.predict(Xp, return_std=True)
+    print("finished GP")
+    
+    # 4) Cast and reshape
+    mean = np.asarray(mean).reshape(-1).astype(dtype)
+    std  = np.asarray(std).reshape(-1, 1).astype(dtype)
+    return mean, std
 
 
 def initialize_arrays(X_init, Y_init):
