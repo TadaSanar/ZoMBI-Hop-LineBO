@@ -17,7 +17,7 @@ import numpy as np, pandas as pd, matplotlib.pyplot as plt
 
 from new_zombihop import ZoMBIHop
 from acquisitions import LCB_ada
-from benchmark_10d_linbo import multiwell_ackley10_simplex, dirichlet_init
+from computational_simulation.benchmark_10d_linbo import multiwell_ackley10_simplex, dirichlet_init
 
 D, GAMMAS, RESOLUTION = 10, 2, 3
 BASE_OBJ = lambda x: multiwell_ackley10_simplex(x, depths=[5,10,15,20,25], extra_wells=5, width=0.05, seed=1)
