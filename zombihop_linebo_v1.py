@@ -2957,15 +2957,8 @@ def run_zombi_main():
         Y_init = np.vstack((Y_init, Y_actual))
 
     print(X_init_actual, Y_init)
-
-    # Store initialization data
-    optimizer.X_all_actual = X_init_actual.copy()
-    optimizer.Y_all = Y_init.copy()
-
-    # No penalization for initial samples (no needles found yet)
-    optimizer.all_penalized = np.zeros(len(X_init_actual), dtype=bool)
-
-    # Count initialization as real evaluations
-    optimizer.real_eval_count = len(X_init_actual)
+    print("--------------------------------")
+    print("should be the same as above:")
+    print(optimizer.X_all_actual, optimizer.Y_all)
 
     print(optimizer.run_zombi_hop())
