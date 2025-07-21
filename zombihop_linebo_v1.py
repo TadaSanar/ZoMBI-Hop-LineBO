@@ -261,7 +261,10 @@ class ZoMBIHop:
         print(f"   Initial points: {len(X_init_actual)}")
         print(f"   Actual evaluations: {len(self.Y_all)}")
         print(f"   Real evaluation count: {self.real_eval_count}")
-        print(f"   Best initial value: {np.min(self.Y_all):.6f}")
+        if len(self.Y_all) > 0:
+            print(f"   Best initial value: {np.min(self.Y_all):.6f}")
+        else:
+            print(f"   Best initial value: N/A (no initial data)")
         print(f"   Average noise estimate: {self._get_average_noise():.6f}")
 
     def objective_function_wrapper(self, line_endpoints):
@@ -572,7 +575,7 @@ class ZoMBIHop:
                         torch.cuda.empty_cache()
 
                     # Progress indicator for large datasets
-                    if n_points > 1000000:
+                    if n_points > 100000:
                         progress = end_idx / n_points * 100
                         if i % (chunk_size * 10) == 0:  # Print every 10 chunks
                             print(f"Progress: {progress:.1f}% ({end_idx:,}/{n_points:,})")
@@ -1141,8 +1144,8 @@ class ZoMBIHop:
 
     def sample_bounded_simplex_cfs(
         self,
-        a: torch.Tensor,
-        b: torch.Tensor,
+        a,
+        b,
         S: float = 1.0,
         num_samples: int = 1000,
         max_batch: int = None,
@@ -1223,6 +1226,13 @@ class ZoMBIHop:
             - Used as the core sampling method in _create_mesh
         """
         import math
+        import numpy as np
+        import torch
+        # Convert a and b to torch tensors if they are numpy arrays
+        if isinstance(a, np.ndarray):
+            a = torch.from_numpy(a)
+        if isinstance(b, np.ndarray):
+            b = torch.from_numpy(b)
         a = a.to(device=self.device, dtype=torch.float64)
         b = b.to(device=self.device, dtype=torch.float64)
         d = a.numel()
@@ -2867,10 +2877,9 @@ def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
     sums = a.sum(axis=-1, keepdims=True)
     return a / sums
 
-def objective_function(ordered_endpoints, num_experiments):
+def objective_function(ordered_endpoints, num_experiments=24):
     """
     Implements communication protocol to get experimental measurements for top two lines.
-
     Args:
         ordered_endpoints (numpy.ndarray): Array of line endpoints ordered by acquisition value
             (greatest to smallest). Shape: (num_lines, 2, dimensions)
@@ -2878,6 +2887,15 @@ def objective_function(ordered_endpoints, num_experiments):
     Returns:
         tuple: (x_actual_array, y_actual_array) containing the experimental measurements
     """
+
+    OPTIMIZING_DIMS = [1, 5, 9]  # Choose which 3 columns to use
+
+    def pad_to_10d(arr):
+        arr = np.atleast_2d(arr)
+        out = np.zeros((arr.shape[0], 10), dtype=arr.dtype)
+        out[:, OPTIMIZING_DIMS] = arr
+        return out
+
     # Get top 2 lines' endpoints
     best_start = ordered_endpoints[0][0]
     best_end = ordered_endpoints[0][1]
@@ -2888,13 +2906,16 @@ def objective_function(ordered_endpoints, num_experiments):
     x = np.array([best_start + t * (best_end - best_start) for t in np.linspace(0, 1, num_experiments)])
     x_cache = np.array([cache_start + t * (cache_end - cache_start) for t in np.linspace(0, 1, num_experiments)])
 
-    # Round and normalize compositions
-    best_start_norm = normalize_last_axis(np.round(best_start, 3))
-    best_end_norm = normalize_last_axis(np.round(best_end, 3))
-    x_norm = normalize_last_axis(np.round(x, 3))
-    cache_start_norm = normalize_last_axis(np.round(cache_start, 3))
-    cache_end_norm = normalize_last_axis(np.round(cache_end, 3))
-    x_cache_norm = normalize_last_axis(np.round(x_cache, 3))
+    # Round and normalize compositions, then pad to 10D
+    # For endpoints, flatten to 1D after padding
+    best_start_norm = pad_to_10d(normalize_last_axis(np.round(best_start, 3)))[0]
+    best_end_norm = pad_to_10d(normalize_last_axis(np.round(best_end, 3)))[0]
+    cache_start_norm = pad_to_10d(normalize_last_axis(np.round(cache_start, 3)))[0]
+    cache_end_norm = pad_to_10d(normalize_last_axis(np.round(cache_end, 3)))[0]
+
+    # For arrays, keep as 2D
+    x_norm = pad_to_10d(normalize_last_axis(np.round(x, 3)))
+    x_cache_norm = pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
 
     # Write compositions and get measurements
     communication.write_compositions(
@@ -2952,7 +2973,10 @@ def run_zombi_main():
     Y_init = np.zeros((0,))  # Empty n=0 array
 
     for point in start_points:
-        X_actual, Y_actual = optimizer.objective_function(point)
+        # Ensure point is a CPU numpy array
+        if hasattr(point, 'cpu'):
+            point = point.cpu().numpy()
+        X_actual, Y_actual = optimizer.linebo_sampler(point)
         X_init_actual = np.vstack((X_init_actual, X_actual))
         Y_init = np.vstack((Y_init, Y_actual))
 
