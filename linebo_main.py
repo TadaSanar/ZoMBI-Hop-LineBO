@@ -256,10 +256,10 @@ if __name__ == "__main__":
     # Number of space angles to be tested for each dimension during BO (for
     # comparing which line should be selected for to be printed). More is
     # better, unless the run gets too slow.
-    M = 21
+    M = 10
     # Number of droplets printed when printing a line gradient (this variable
     # is used only if running simulations).
-    n_droplets = 1000
+    n_droplets = 30
     
     # Number of BO rounds.
     # Set any positive integer if you run simulations with a target function.
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     # gradient start location in the hyperspectral camera inaccurately.
     
     # Plot figures?
-    plotting = True
+    plotting = False
     
     # Candidate points K define together with BO-suggested point P the
     # line candidates PK (another way to think about this is that K together

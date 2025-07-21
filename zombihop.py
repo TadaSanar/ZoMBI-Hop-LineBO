@@ -67,13 +67,14 @@ class ZombiHop:
         self.xi = 0.1
 
 
-    def run_virtual(self, verbose = False, plot = True):
+    def run_experimental(self, n_droplets, n_vectors, verbose = False, plot = True):
         # === INITIALIZATION ===#
         random.seed(self.seed)
         GP = utils.reset_GP(self.X_init, self.Y_init)  # initialize the first GP model
         lower_bound = self.lower_bound # initialize bounds based on user-selection
         upper_bound = self.upper_bound # initialize bounds based on user-selection
         full_mesh = utils.bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # full, un-zoomed mesh. This will not be updated
+        print(full_mesh.shape[0]*full_mesh.shape[1])
         dimension_meshes = utils.bounded_mesh(self.X_init.shape[1], lower_bound, upper_bound, self.ftype, self.resolution)  # mesh that will dynamically zoom in each iteration
         penalty_mask = np.ones((dimension_meshes.shape[0], 1)).astype(self.ftype)  # init penalty mask as all ones => has no multiplicative effect
         X_intermediate, Y_intermediate, X_all, Y_all, X_GPmemory, Y_GPmemory, X_BOUNDmemory, Y_BOUNDmemory, X_final, Y_final, needles, needle_locs = utils.initialize_arrays(self.X_init, self.Y_init)
@@ -106,18 +107,48 @@ class ZombiHop:
 
                 inc = 1 / self.n_draws_per_activation
                 for n in range(self.n_draws_per_activation):  # number of draws per ZoMBI activation
+                    print(n)
                     inc = utils.progress_bar(n, self.n_draws_per_activation, inc)
                     # acquisition function for mesh
-                    acquisition = self.acquisition_type(X=dimension_meshes, GP_model=GP,  n=n, fX_best=Y_BOUNDmemory.min(), ratio=self.ratio, decay=self.decay, xi=self.xi, ftype=self.ftype)
-                    acquisition = acquisition * penalty_mask
-                    
-                    # gather the best X-value to ask the virtual "experiment" to create
-                    X_ask = dimension_meshes[np.argmax(acquisition),:].reshape(1,-1)
+                    # acquisition = self.acquisition_type(X=dimension_meshes, GP_model=GP,  n=n, fX_best=Y_BOUNDmemory.min(), ratio=self.ratio, decay=self.decay, xi=self.xi, ftype=self.ftype)
+                    # acquisition = acquisition * penalty_mask
+                    # # gather the best X-value to ask the virtual "experiment" to create
+                    # X_ask = dimension_meshes[np.argmax(acquisition),:].reshape(1,-1)
+
+                    # 1) get the raw acquisition (might accidentally be 2D)
+                    raw = self.acquisition_type(
+                        X=dimension_meshes,
+                        GP_model=GP,
+                        n=n,
+                        fX_best=Y_BOUNDmemory.min(),
+                        ratio=self.ratio,
+                        decay=self.decay,
+                        xi=self.xi,
+                        ftype=self.ftype
+                    )
+
+                    # 2) force raw into a true 1D vector of length = number of mesh points
+                    raw = np.asarray(raw)
+                    if raw.ndim > 1:
+                        # reshape to (n_pts, ?), then take the first column
+                        raw = raw.reshape(raw.shape[0], -1)[:, 0]
+                    acq_flat = raw.ravel()      # now shape (n_pts,)
+
+                    # 3) apply your 1-D penalty mask
+                    mask    = penalty_mask.ravel()   # shape (n_pts,)
+                    acq_mask = acq_flat * mask       # still shape (n_pts,)
+
+                    # 4) pick the best index and ask point
+                    best_idx = int(np.argmax(acq_mask))
+                    X_ask    = dimension_meshes[best_idx, :].reshape(1, -1)
 
                     # tell the model what experiments were created
                     if self.sampler: # if using a sampler, required outputs: X_tell shape = (n,d); Y_tell shape = (n,) for n samples and d dimensions
-                        X_tell, Y_tell = self.sampler(X_ask, dimension_meshes, acquisition, self.Y_experimental,
+                        print('starting sampler')
+                        X_tell, Y_tell = self.sampler(X_ask, dimension_meshes, acq_mask, self.Y_experimental,
                                                       emin = lower_bound, emax = upper_bound,
+                                                      n_droplets = n_droplets,
+                                                      M = n_vectors,
                                                       emin_global = None, #0,
                                                       emax_global = None, #1
                                                       acq_GP = GP, 
@@ -129,16 +160,35 @@ class ZombiHop:
                                                       acq_xi = self.xi, 
                                                       acq_ftype = self.ftype,
                                                       plotting = 'plot_few')
-                        
+                        print('ending sampler')
                     else:
                         Y_tell = self.Y_experimental(X_ask)
                         X_tell = X_ask
 
-                    # check posterior of surrogate with Y_tell, only check best performer of Y_tell
-                    Y_tell_min = np.min(Y_tell) # get minimum Y_tell
-                    X_tell_min = X_tell[np.argmin(Y_tell), :].reshape(1,-1) # get corresponding minimum X_tell
-                    mu, std = utils.GP_pred(X_tell_min, GP, self.ftype) # check surrogate posterior at corresponding minimum X_tell
-                    ymodel = mu[0][0]
+                    print('OBJECETIVES: ', Y_tell)
+
+                    # # check posterior of surrogate with Y_tell, only check best performer of Y_tell
+                    # Y_tell_min = np.min(Y_tell) # get minimum Y_tell
+                    # X_tell_min = X_tell[np.argmin(Y_tell), :].reshape(1,-1) # get corresponding minimum X_tell
+                    # mu, std = utils.GP_pred(X_tell_min, GP, self.ftype) # check surrogate posterior at corresponding minimum X_tell
+                    # ymodel = mu[0][0]
+                    
+
+                    # 1) Find your experimental best index exactly as before
+                    Y_tell_min = np.min(Y_tell)
+                    best_idx   = int(np.argmin(Y_tell))
+
+                    # 2) Batch-predict the entire droplet set at once
+                    #    (X_tell has shape (n_droplets, D))
+                    mu_all, std_all = utils.GP_pred(X_tell, GP, self.ftype)
+                    
+                    # 3) Extract the surrogate mean at that same best index
+                    ymodel     = mu_all[best_idx]
+
+                    # 4) Reset X_tell_min for downstream code (shape (1, D))
+                    X_tell_min = X_tell[best_idx].reshape(1, -1)
+
+
 
                     # compute error between surrogate posterior and "experimental"
                     error = np.abs(Y_tell_min - ymodel)/np.abs(Y_tell_min)
