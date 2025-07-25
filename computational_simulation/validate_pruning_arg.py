@@ -15,7 +15,7 @@ from __future__ import annotations
 import time, pathlib
 import numpy as np, pandas as pd, matplotlib.pyplot as plt
 
-from new_zombihop import ZoMBIHop
+from computational_simulation.new_zombihop import ZoMBIHop
 from acquisitions import LCB_ada
 from computational_simulation.benchmark_10d_linbo import multiwell_ackley10_simplex, dirichlet_init
 
