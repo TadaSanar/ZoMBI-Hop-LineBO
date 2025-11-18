@@ -22,16 +22,6 @@ from gp_cuda import GPUExactGP
 import torch
 import gpytorch
 from scipy.spatial.distance import pdist
-import communication
-import time
-import sqlite3
-import os
-
-fixed_comp = True # if using fixed_comp = True, should also enable chaos = True in main1.py
-fixed_comp_start = [0,1,0] # fixed start comp
-fixed_comp_end = [0,0,1] # fixed end comp
-
-OPTIMIZING_DIMS = [0,1,8] # CHOOSE WHICH ARCHERFISH MODULES TO ACTIVATE
 
 # Suppress sklearn convergence warnings for cleaner output
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
@@ -316,53 +306,26 @@ class ZoMBIHop:
             - The method handles cases where all points might be penalized
             - Provides informative logging about the filtering process
         """
-        try:
-            print(f"    [objective_function_wrapper] Calling objective function with {len(line_endpoints)} line endpoints...")
-            # Call objective function with line endpoints
-            x_actual_array, y_actual_array = self.objective_function(line_endpoints)
-            print(f"    [objective_function_wrapper] Objective function returned {len(x_actual_array)} points")
-        except Exception as e:
-            print(f"    ⚠️ [objective_function_wrapper] Objective function failed: {e}")
-            # Return empty arrays as fallback
-            return np.array([]), np.array([])
+        # Call objective function with line endpoints
+        x_actual_array, y_actual_array = self.objective_function(line_endpoints)
 
-        try:
-            print(f"    [objective_function_wrapper] Computing penalty mask for {len(x_actual_array)} points...")
-            # Check which points are in penalized regions
-            penalty_mask = self._compute_penalized_mask(x_actual_array)
-            penalty_status = penalty_mask < 0.5  # True if penalized
-            print(f"    [objective_function_wrapper] Penalty mask computed, {np.sum(penalty_status)} points penalized")
-        except Exception as e:
-            print(f"    ⚠️ [objective_function_wrapper] Penalty mask computation failed: {e}")
-            # Assume no points are penalized
-            penalty_status = np.zeros(len(x_actual_array), dtype=bool)
+        # Check which points are in penalized regions
+        penalty_mask = self._compute_penalized_mask(x_actual_array)
+        penalty_status = penalty_mask < 0.5  # True if penalized
 
-        try:
-            print(f"    [objective_function_wrapper] Adding {len(x_actual_array)} points to global tracking...")
-            # Add ALL experimental points to global tracking (penalized and non-penalized)
-            for i, (x_actual, y_actual, is_penalized) in enumerate(zip(x_actual_array, y_actual_array, penalty_status)):
-                # Update global tracking arrays - no more X_requested since we work with line endpoints
-                self.X_all_actual = np.vstack([self.X_all_actual, x_actual.reshape(1, -1)]) if len(self.X_all_actual) > 0 else x_actual.reshape(1, -1)
+        # Add ALL experimental points to global tracking (penalized and non-penalized)
+        for i, (x_actual, y_actual, is_penalized) in enumerate(zip(x_actual_array, y_actual_array, penalty_status)):
+            # Update global tracking arrays - no more X_requested since we work with line endpoints
+            self.X_all_actual = np.vstack([self.X_all_actual, x_actual.reshape(1, -1)]) if len(self.X_all_actual) > 0 else x_actual.reshape(1, -1)
 
-                self.Y_all = np.append(self.Y_all, y_actual)
-                self.all_penalized = np.append(self.all_penalized, is_penalized)
-                self.real_eval_count += 1
-            print(f"    [objective_function_wrapper] Global tracking updated successfully")
-        except Exception as e:
-            print(f"    ⚠️ [objective_function_wrapper] Global tracking update failed: {e}")
+            self.Y_all = np.append(self.Y_all, y_actual)
+            self.all_penalized = np.append(self.all_penalized, is_penalized)
+            self.real_eval_count += 1
 
-        try:
-            print(f"    [objective_function_wrapper] Filtering penalized points...")
-            # Filter out penalized points for return to GP training
-            non_penalized_mask = ~np.array(penalty_status)
-            x_actual_filtered = x_actual_array[non_penalized_mask]
-            y_actual_filtered = y_actual_array[non_penalized_mask]
-            print(f"    [objective_function_wrapper] Filtering completed: {len(x_actual_filtered)} non-penalized points")
-        except Exception as e:
-            print(f"    ⚠️ [objective_function_wrapper] Filtering failed: {e}")
-            # Return all points as fallback
-            x_actual_filtered = x_actual_array
-            y_actual_filtered = y_actual_array
+        # Filter out penalized points for return to GP training
+        non_penalized_mask = ~np.array(penalty_status)
+        x_actual_filtered = x_actual_array[non_penalized_mask]
+        y_actual_filtered = y_actual_array[non_penalized_mask]
 
         if len(x_actual_filtered) == 0:
             print("⚠️  Warning: All experimental points were penalized! Returning empty batch.")
@@ -370,12 +333,6 @@ class ZoMBIHop:
             n_penalized = len(x_actual_array) - len(x_actual_filtered)
             print(f"📊 Filtered out {n_penalized}/{len(x_actual_array)} penalized points, returning {len(x_actual_filtered)} for GP training")
 
-        print(f"    [objective_function_wrapper] Returning {len(x_actual_filtered)} filtered points")
-        
-        # Update memory DB with the objectives we just processed
-        if len(y_actual_array) > 0:
-            update_objective_memory_db(y_actual_array)
-        
         return x_actual_filtered, y_actual_filtered
 
     def _get_average_noise(self):
@@ -1934,8 +1891,6 @@ class ZoMBIHop:
     def _check_gp_size(self):
         """
         Check GP dataset size and trim to max_gp_points if needed, keeping best points.
-        If all points are penalized (no unpenalized data), generate new data by sampling
-        a random simplex point and running linebo_sampler until unpenalized points exist.
 
         This method manages the memory usage of the Gaussian Process by monitoring
         the size of the training dataset and trimming it when it exceeds the
@@ -1943,13 +1898,7 @@ class ZoMBIHop:
         are retained, maintaining the quality of the GP model while controlling
         memory usage.
 
-        Additionally, if all points are penalized (no unpenalized data), it will
-        repeatedly sample a new point from the bounded simplex and use linebo_sampler
-        to generate more data until at least one unpenalized point exists.
-
         Process:
-            0. If all points are penalized (no unpenalized data), generate new data
-               until at least one unpenalized point exists.
             1. Checks if current dataset size exceeds max_gp_points
             2. If trimming is needed:
                - Identifies the best points (lowest Y values)
@@ -1978,30 +1927,7 @@ class ZoMBIHop:
             - Maintains relative ordering of points by quality
             - Updates all related tracking arrays consistently
             - Essential for preventing memory issues in long optimizations
-            - If all points are penalized, generates new data until unpenalized points exist
         """
-        # Check for the case where all points are penalized (no unpenalized data)
-        X_unpen, Y_unpen, mask_unpen = self._get_unpenalized_points()
-        attempts = 0
-        while X_unpen.shape[0] == 0:
-            print("⚠️ All points have been penalized! Sampling a new point to generate data...")
-            # Use global bounds for simplex sampling
-            a = np.zeros(self.dimensions)
-            b = np.ones(self.dimensions)
-            # Sample a single point on the simplex
-            x_new = self.sample_bounded_simplex_cfs(a, b, S=1.0, num_samples=1)
-            if hasattr(x_new, 'cpu'):
-                x_new = x_new.cpu().numpy()
-            if x_new.ndim == 2 and x_new.shape[0] == 1:
-                x_new = x_new[0]
-            # Generate new data using linebo_sampler
-            self.linebo_sampler(x_new)
-            # Re-check for unpenalized points
-            X_unpen, Y_unpen, mask_unpen = self._get_unpenalized_points()
-            attempts += 1
-            if attempts > 10:
-                print("⚠️ Warning: More than 10 attempts to generate unpenalized points. Check penalization logic.")
-        # Now proceed with normal GP size trimming
         if len(self.activation_Y_data) <= self.max_gp_points:
             return  # No trimming needed
 
@@ -2122,22 +2048,7 @@ class ZoMBIHop:
 
             # Fit GP with current activation data
             if len(self.activation_Y_data) > 0:
-                try:
-                    if verbose:
-                        print(f"  Fitting GP with {len(self.activation_Y_data)} points...")
-                    self.gp.fit(self.activation_X_data, self.activation_Y_data)
-                    if verbose:
-                        print(f"  GP fitting completed successfully")
-                except Exception as e:
-                    print(f"  ⚠️ GP fitting failed: {e}")
-                    # Continue with previous GP model if available
-                    if verbose:
-                        print(f"  Continuing with previous GP model...")
-                    # If no previous model, create a simple fallback
-                    if not hasattr(self, 'gp_fitted') or not self.gp_fitted:
-                        print(f"  Creating simple fallback model...")
-                        # Create a simple constant prediction model
-                        self.gp_fitted = True
+                self.gp.fit(self.activation_X_data, self.activation_Y_data)
 
             iteration_converged = False
 
@@ -2147,25 +2058,7 @@ class ZoMBIHop:
                     print(f"  Iteration {iteration}, Best Y: {best_y:.6f}")
 
                 # Compute acquisition function
-                try:
-                    if verbose:
-                        print(f"    Computing acquisition function for {len(mesh_points)} points...")
-                    acquisition_values = self._penalty_acquisition_function(mesh_points)
-                    if verbose:
-                        print(f"    Acquisition computation completed")
-                    
-                    # FORCE CONTINUATION: Ensure we have valid acquisition values
-                    if np.all(acquisition_values == -np.inf) or np.all(np.isnan(acquisition_values)):
-                        print(f"    ⚠️ All acquisition values are invalid, using random values...")
-                        acquisition_values = np.random.random(len(mesh_points))
-                        print(f"    Using random acquisition values as fallback")
-                        
-                except Exception as e:
-                    print(f"    ⚠️ Acquisition function failed: {e}")
-                    # Use random selection as fallback
-                    acquisition_values = np.random.random(len(mesh_points))
-                    if verbose:
-                        print(f"    Using random acquisition values as fallback")
+                acquisition_values = self._penalty_acquisition_function(mesh_points)
 
                 # Check if we have any valid acquisition values
                 if np.all(acquisition_values == -np.inf):
@@ -2181,49 +2074,16 @@ class ZoMBIHop:
                 x_ask = mesh_points[best_idx]
 
                 # call linebo_sampler function - returns arrays of actual experimental points and values using linebo sampling
-                try:
-                    if verbose:
-                        print(f"    Calling LineBO sampler with point: {x_ask}")
-                    x_actual_array, y_actual_array = self.linebo_sampler(x_ask, current_bounds)
-                    if verbose:
-                        print(f"    LineBO sampler returned {len(x_actual_array)} points")
-                    
-                    # FORCE CONTINUATION: If we got any data back, proceed regardless of empty arrays
-                    if len(x_actual_array) == 0 and len(y_actual_array) == 0:
-                        print(f"    ⚠️ LineBO sampler returned empty arrays, but continuing anyway...")
-                        # Create dummy data to continue
-                        x_actual_array = np.array([x_ask])  # Use the asked point as fallback
-                        y_actual_array = np.array([1.0])    # Use dummy objective value
-                        print(f"    Using fallback data: {len(x_actual_array)} points")
-                        
-                except Exception as e:
-                    print(f"    ⚠️ LineBO sampler failed: {e}")
-                    # Return fallback data to continue
-                    x_actual_array = np.array([x_ask])
-                    y_actual_array = np.array([1.0])
-                    print(f"    Using fallback data after error: {len(x_actual_array)} points")
+                x_actual_array, y_actual_array = self.linebo_sampler(x_ask, current_bounds)
 
                 # Check convergence using the entire batch of experimental points
                 # This is much more robust than using a single point
-                try:
-                    converged, converged_x_actual, converged_y_actual = self._check_batch_convergence(x_actual_array, y_actual_array)
-                    if verbose:
-                        print(f"    Convergence check completed: {converged}")
-                except Exception as e:
-                    print(f"    ⚠️ Convergence check failed: {e}")
-                    converged = False
-                    converged_x_actual = np.array([])
-                    converged_y_actual = np.array([])
-                    print(f"    Continuing without convergence check...")
+                converged, converged_x_actual, converged_y_actual = self._check_batch_convergence(x_actual_array, y_actual_array)
 
-                # Find the best actual point from this batch for reporting, but only if batch is not empty
-                if len(y_actual_array) > 0:
-                    best_batch_idx = np.argmin(y_actual_array)
-                    best_x_actual_batch = x_actual_array[best_batch_idx]
-                    best_y_actual = y_actual_array[best_batch_idx]
-                else:
-                    best_x_actual_batch = None
-                    best_y_actual = None
+                # Find the best actual point from this batch for reporting
+                best_batch_idx = np.argmin(y_actual_array)
+                best_x_actual_batch = x_actual_array[best_batch_idx]
+                best_y_actual = y_actual_array[best_batch_idx]
 
                 # Add ALL experimental data from batch to activation training set
                 for x_actual, y_actual in zip(x_actual_array, y_actual_array):
@@ -2231,39 +2091,21 @@ class ZoMBIHop:
                     self.activation_Y_data = np.append(self.activation_Y_data, y_actual)
                     self.zoom_level_markers.append(zoom_level)
 
-                # Check GP size and trim if needed before fitting
+              # Check GP size and trim if needed before fitting
                 self._check_gp_size()
-                
-                # Only fit GP if we have new data
-                if len(x_actual_array) > 0:
-                    try:
-                        if verbose:
-                            print(f"    Fitting GP with updated data ({len(self.activation_Y_data)} total points)...")
-                        self.gp.fit(self.activation_X_data, self.activation_Y_data)
-                        if verbose:
-                            print(f"    GP fitting with new data completed")
-                    except Exception as e:
-                        print(f"    ⚠️ GP fitting with new data failed: {e}")
-                        # Continue with previous model
-                        print(f"    Continuing with previous GP model...")
+                self.gp.fit(self.activation_X_data, self.activation_Y_data)
 
                 if verbose and iteration % 10 == 0:
-                    if best_y_actual is not None:
-                        best_y_str = f"{best_y_actual:.6f}"
-                    else:
-                        best_y_str = "None"
-                    if self.convergence_errors:
-                        mean_err_str = f"{self.convergence_errors[-1]:.6f}"
-                    else:
-                        mean_err_str = "N/A"
-                    print(f"    Got {len(x_actual_array)} actual points, best Y: {best_y_str}, Mean batch error: {mean_err_str}")
+                    print(f"    Asked for: {x_ask}")
+                    print(f"    Got {len(x_actual_array)} actual points, best Y: {best_y_actual:.6f}, "
+                          f"Mean batch error: {self.convergence_errors[-1]:.6f}")
 
                 if converged:
                     if verbose:
                         print(f"  *** NEEDLE FOUND at iteration {iteration}! ***")
                         print(f"  Convergence achieved with best {len(converged_x_actual)} points < {self.tolerance}")
                         print(f"  Best actual point: {best_x_actual_batch}")
-                        print(f"  Best Y value: {best_y_str}")
+                        print(f"  Best Y value: {best_y_actual:.6f}")
                     # Store the converged points
                     final_converged_x_actual = converged_x_actual
                     final_converged_y_actual = converged_y_actual
@@ -2275,31 +2117,16 @@ class ZoMBIHop:
 
             # Compute new bounds for next zoom level
             if zoom_level < self.max_zoom_levels - 1:  # Don't compute bounds on last iteration
-                try:
-                    if verbose:
-                        print(f"  Computing new bounds for next zoom level...")
-                    lower_bounds, upper_bounds = self._compute_new_bounds()
-                    current_bounds = list(zip(lower_bounds, upper_bounds))
-                    if verbose:
-                        print(f"  New bounds computed: {current_bounds}")
-                except Exception as e:
-                    print(f"  ⚠️ Bounds computation failed: {e}")
-                    # Keep current bounds
-                    if verbose:
-                        print(f"  Keeping current bounds for next zoom level")
+                lower_bounds, upper_bounds = self._compute_new_bounds()
+                current_bounds = list(zip(lower_bounds, upper_bounds))
 
                 if verbose:
                     print(f"  Zooming in for next level...")
 
         # Find best result from activation
-        if len(self.activation_Y_data) > 0:
-            best_idx = np.argmin(self.activation_Y_data)
-            best_x_actual = self.activation_X_data[best_idx]
-            best_y = self.activation_Y_data[best_idx]
-        else:
-            # No data collected, use fallback
-            best_x_actual = np.zeros(self.dimensions)
-            best_y = float('inf')
+        best_idx = np.argmin(self.activation_Y_data)
+        best_x_actual = self.activation_X_data[best_idx]
+        best_y = self.activation_Y_data[best_idx]
 
         results = {
             'best_x_actual': best_x_actual,
@@ -2822,28 +2649,14 @@ class ZoMBIHop:
         print(f"Starting LineBO sampling from point: {x_tell}")
 
         # Step 1: Generate zero-sum directions
-        try:
-            print(f"  Generating {self.linebo_num_lines} directions...")
-            directions = self._linebo_generate_equally_spaced_directions(self.linebo_num_lines)
-            print(f"  Generated {len(directions)} directions successfully")
-        except Exception as e:
-            print(f"  ⚠️ Direction generation failed: {e}")
-            # Use fallback directions
-            directions = [np.array([1, -1, 0]), np.array([1, 0, -1]), np.array([0, 1, -1])]
+        directions = self._linebo_generate_equally_spaced_directions(self.linebo_num_lines)
 
         # Step 2: Find line endpoints for each direction
         line_endpoints = []
-        print(f"  Finding line endpoints for {len(directions)} directions...")
-        for i, direction in enumerate(directions):
-            try:
-                endpoints = self._linebo_find_line_endpoints(x_tell, direction, bounds_to_use)
-                if endpoints is not None:
-                    line_endpoints.append(endpoints)
-                if i % 10 == 0:
-                    print(f"    Processed {i+1}/{len(directions)} directions, found {len(line_endpoints)} valid lines")
-            except Exception as e:
-                print(f"    ⚠️ Failed to find endpoints for direction {i}: {e}")
-                continue
+        for direction in directions:
+            endpoints = self._linebo_find_line_endpoints(x_tell, direction, bounds_to_use)
+            if endpoints is not None:
+                line_endpoints.append(endpoints)
 
         if not line_endpoints:
             print("⚠️ No valid line segments found within bounds! Using fallback...")
@@ -2855,19 +2668,11 @@ class ZoMBIHop:
 
         # Step 3: Integrate acquisition along each line and store with endpoints
         acquisition_values = []
-        print(f"  Integrating acquisition function along {len(line_endpoints)} lines...")
-        for i, endpoints in enumerate(line_endpoints):
-            try:
-                integrated_value = self._linebo_integrate_acquisition(
-                    endpoints, self.linebo_pts_per_line, self._penalty_acquisition_function
-                )
-                acquisition_values.append((integrated_value, endpoints))
-                if i % 10 == 0:
-                    print(f"    Integrated {i+1}/{len(line_endpoints)} lines")
-            except Exception as e:
-                print(f"    ⚠️ Failed to integrate acquisition for line {i}: {e}")
-                # Use fallback value
-                acquisition_values.append((0.0, endpoints))
+        for endpoints in line_endpoints:
+            integrated_value = self._linebo_integrate_acquisition(
+                endpoints, self.linebo_pts_per_line, self._penalty_acquisition_function
+            )
+            acquisition_values.append((integrated_value, endpoints))
 
         # Sort by integrated acquisition value (descending)
         acquisition_values.sort(key=lambda x: x[0], reverse=True)
@@ -2876,23 +2681,13 @@ class ZoMBIHop:
         ordered_endpoints = np.array([x[1] for x in acquisition_values])
 
         print(f"Best integrated acquisition value: {acquisition_values[0][0]:.4f}")
-
-        if fixed_comp:
-            ordered_endpoints[0][0] = fixed_comp_start
-            ordered_endpoints[0][1] = fixed_comp_end
-
         print(f"Best line endpoints: {ordered_endpoints[0][0]} and {ordered_endpoints[0][1]}")
 
         # Step 4: Call objective_function_wrapper with ordered endpoints
-        try:
-            print(f"  Calling objective_function_wrapper with {len(ordered_endpoints)} line endpoints...")
-            val = self.objective_function_wrapper(ordered_endpoints)
-            print("received val:", val)
-            return val
-        except Exception as e:
-            print(f"  ⚠️ objective_function_wrapper failed: {e}")
-            # Return empty arrays as fallback
-            return np.array([]), np.array([])
+        val = self.objective_function_wrapper(ordered_endpoints)
+        print("received val:", val)
+
+        return val
 
     def _check_convergence(self, actual_y, predicted_y):
         """
@@ -3090,141 +2885,16 @@ class ZoMBIHop:
 
         plt.close()
 
-# OPTIMIZING_DIMS = [1, 5, 9]  # Choose which 3 columns to use
-# OPTIMIZING_DIMS = [5, 7, 9]  # Choose which 3 columns to use, used for PhD thesis
+# --- Load bandgap.csv ---
+df = pd.read_csv("bandgap.csv")
+X_data = df[["Cs", "MA", "FA"]].values
+y_data = df["Bandgap"].values
 
-# ─── get_y_measurements now returns (y, comps) and clears both tables ───────
-def get_y_measurements(x, db="./sql/objective.db", verbose=False, ready_for_objectives=False):
-    """
-    During initialization (ready_for_objectives=False), ignore handshake and process any available data.
-    After initialization (ready_for_objectives=True), use handshake protocol.
-    """
-    import sqlite3
-    import time
-    import os
-    import numpy as np
-    consecutive_errors = 0
-    max_consecutive_errors = 10
+# --- Fit Random Forest Regressor ---
+rf = RandomForestRegressor(n_estimators=500, random_state=42)
+rf.fit(X_data, y_data)
 
-    if ready_for_objectives:
-        # 1. Wait for handshake flag
-        while True:
-            try:
-                conn = sqlite3.connect(db, timeout=10.0)
-                cur = conn.cursor()
-                cur.execute('''CREATE TABLE IF NOT EXISTS handshake (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    new_objective_available INTEGER DEFAULT 0
-                )''')
-                cur.execute('INSERT OR IGNORE INTO handshake (id, new_objective_available) VALUES (1, 0)')
-                cur.execute('SELECT new_objective_available FROM handshake WHERE id = 1')
-                flag = cur.fetchone()
-                conn.close()
-                if flag and flag[0] == 1:
-                    break
-                time.sleep(1)
-            except Exception as e:
-                time.sleep(1)
-                continue
-
-    # 2. Now proceed to read objective and compositions as before
-    while True:
-        try:
-            if not os.path.exists(db):
-                time.sleep(1)
-                continue
-            from communication import _objective_db_lock, _objective_writing
-            if _objective_writing:
-                time.sleep(0.1)
-                continue
-            with _objective_db_lock:
-                conn = sqlite3.connect(db, timeout=30.0)
-                cur = conn.cursor()
-                cur.execute("SELECT * FROM objective")
-                all_rows = cur.fetchall()
-                if not all_rows:
-                    conn.close()
-                    time.sleep(1)
-                    continue
-                if len(all_rows) == 1 and len(all_rows[0]) > 1:
-                    flat = list(all_rows[0])
-                elif len(all_rows) > 1 and len(all_rows[0]) == 1:
-                    flat = [r[0] for r in all_rows]
-                else:
-                    conn.close()
-                    time.sleep(1)
-                    continue
-                y_all = np.array(flat, dtype=float)
-                valid_mask = ~np.isnan(y_all)
-                if hasattr(y_all, "mask"):
-                    valid_mask &= ~y_all.mask
-                valid_indices = np.where(valid_mask)[0]
-                if len(valid_indices) == 0:
-                    conn.close()
-                    time.sleep(1)
-                    continue
-                y = y_all[valid_indices].reshape(-1)
-                if len(y) == 0:
-                    conn.close()
-                    time.sleep(1)
-                    continue
-                cur.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name='compositions'"
-                )
-                if cur.fetchone():
-                    cur.execute("SELECT * FROM compositions")
-                    comp_rows = cur.fetchall()
-                    X_meas_full = np.array(comp_rows, dtype=float) if comp_rows else None
-                else:
-                    X_meas_full = None
-                if X_meas_full is not None and X_meas_full.shape[0] >= len(flat):
-                    x_meas = X_meas_full[valid_indices][:, OPTIMIZING_DIMS]
-                elif X_meas_full is not None and X_meas_full.shape[0] > 0:
-                    x_meas = np.zeros((len(valid_indices), len(OPTIMIZING_DIMS)), dtype=float)
-                    n_to_copy = min(X_meas_full.shape[0], len(valid_indices))
-                    x_meas[:n_to_copy] = X_meas_full[:n_to_copy][:, OPTIMIZING_DIMS]
-                else:
-                    x_meas = np.zeros((len(valid_indices), len(OPTIMIZING_DIMS)), dtype=float)
-                if verbose:
-                    print(f"[get_y_measurements] ✅ NEW DATA RECEIVED: {len(y)} objective values")
-                conn.close()
-                break
-        except Exception as e:
-            consecutive_errors += 1
-            if consecutive_errors >= max_consecutive_errors:
-                time.sleep(5.0)
-                consecutive_errors = 0
-            else:
-                time.sleep(1)
-            continue
-
-    # 3. After successful processing, clear handshake flag and update memory DB
-    if ready_for_objectives:
-        try:
-            conn = sqlite3.connect(db, timeout=10.0)
-            cur = conn.cursor()
-            cur.execute('UPDATE handshake SET new_objective_available = 0 WHERE id = 1')
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"[get_y_measurements] Error clearing handshake flag: {e}")
-        # Update memory DB
-        try:
-            mem_db_path = "./sql/objective_memory.db"
-            mem_conn = sqlite3.connect(mem_db_path, timeout=10.0)
-            mem_cur = mem_conn.cursor()
-            mem_cur.execute("DROP TABLE IF EXISTS objective")
-            mem_cur.execute("CREATE TABLE objective (val REAL)")
-            for val in y:
-                mem_cur.execute("INSERT INTO objective (val) VALUES (?)", (float(val),))
-            mem_conn.commit()
-            mem_conn.close()
-            if verbose:
-                print(f"[get_y_measurements] Memory DB updated with {len(y)} objectives.")
-        except Exception as e:
-            print(f"[get_y_measurements] Error updating memory DB: {e}")
-    return y, x_meas
-
+OPTIMIZING_DIMS = [0, 1, 2]  # Using all 3 dimensions since we only have Cs, MA, FA
 
 def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
     """
@@ -3232,9 +2902,9 @@ def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    arr : array-like of shape (..., 10)
-        Input data. Can be 1-D (10,) or 2-D (n, 10), or higher-dimensional
-        as long as the last axis is length 10.
+    arr : array-like of shape (..., 3)
+        Input data. Can be 1-D (3,) or 2-D (n, 3), or higher-dimensional
+        as long as the last axis is length 3.
 
     Returns
     -------
@@ -3246,123 +2916,49 @@ def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
     sums = a.sum(axis=-1, keepdims=True)
     return a / sums
 
-def objective_function_init(ordered_endpoints, num_experiments=24):
-    """
-    Initialization version of objective_function that doesn't check memory DB.
-    Used for random initialization phase.
-    """
-    def pad_to_10d(arr):
-        arr = np.atleast_2d(arr)
-        out = np.zeros((arr.shape[0], 10), dtype=arr.dtype)
-        out[:, OPTIMIZING_DIMS] = arr
-        return out
-
-    # Get top 2 lines' endpoints
-    best_start = ordered_endpoints[0][0]
-    best_end = ordered_endpoints[0][1]
-    cache_start = ordered_endpoints[1][0]
-    cache_end = ordered_endpoints[1][1]
-    print(ordered_endpoints[:10])
-
-    # Generate evenly spaced points along both lines in high-dimensional space
-    x = np.array([best_start + t * (best_end - best_start) for t in np.linspace(0, 1, num_experiments)])
-    x_cache = np.array([cache_start + t * (cache_end - cache_start) for t in np.linspace(0, 1, num_experiments)])
-
-    # Round and normalize compositions, then pad to 10D
-    # For endpoints, flatten to 1D after padding
-    best_start_norm = pad_to_10d(normalize_last_axis(np.round(best_start, 3)))[0]
-    best_end_norm = pad_to_10d(normalize_last_axis(np.round(best_end, 3)))[0]
-    cache_start_norm = pad_to_10d(normalize_last_axis(np.round(cache_start, 3)))[0]
-    cache_end_norm = pad_to_10d(normalize_last_axis(np.round(cache_end, 3)))[0]
-
-    # For arrays, keep as 2D
-    x_norm = pad_to_10d(normalize_last_axis(np.round(x, 3)))
-    x_cache_norm = pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
-
-    # Write compositions and get measurements
-    communication.write_compositions(
-        start=best_start_norm,
-        end=best_end_norm,
-        array=x_norm,
-        start_cache=cache_start_norm,
-        end_cache=cache_end_norm,
-        array_cache=x_cache_norm,
-        timestamp=time.time()
-    )
-
-    y, x_meas = get_y_measurements(x, verbose=True, ready_for_objectives=False)
-
-    return x_meas, y.ravel()
-
-
 def objective_function(ordered_endpoints, num_experiments=24):
     """
-    Implements communication protocol to get experimental measurements for top two lines.
+    Evaluates points along lines using the random forest model.
     Args:
         ordered_endpoints (numpy.ndarray): Array of line endpoints ordered by acquisition value
             (greatest to smallest). Shape: (num_lines, 2, dimensions)
 
     Returns:
-        tuple: (x_actual_array, y_actual_array) containing the experimental measurements
+        tuple: (x_actual_array, y_actual_array) containing the predictions
     """
-
-    def pad_to_10d(arr):
-        arr = np.atleast_2d(arr)
-        out = np.zeros((arr.shape[0], 10), dtype=arr.dtype)
-        out[:, OPTIMIZING_DIMS] = arr
-        return out
-
     # Get top 2 lines' endpoints
     best_start = ordered_endpoints[0][0]
     best_end = ordered_endpoints[0][1]
     cache_start = ordered_endpoints[1][0]
     cache_end = ordered_endpoints[1][1]
-    print(ordered_endpoints[:10])
+    print(ordered_endpoints)
 
-    # Generate evenly spaced points along both lines in high-dimensional space
+    # Generate evenly spaced points along both lines
     x = np.array([best_start + t * (best_end - best_start) for t in np.linspace(0, 1, num_experiments)])
     x_cache = np.array([cache_start + t * (cache_end - cache_start) for t in np.linspace(0, 1, num_experiments)])
 
-    # Round and normalize compositions, then pad to 10D
-    # For endpoints, flatten to 1D after padding
-    best_start_norm = pad_to_10d(normalize_last_axis(np.round(best_start, 3)))[0]
-    best_end_norm = pad_to_10d(normalize_last_axis(np.round(best_end, 3)))[0]
-    cache_start_norm = pad_to_10d(normalize_last_axis(np.round(cache_start, 3)))[0]
-    cache_end_norm = pad_to_10d(normalize_last_axis(np.round(cache_end, 3)))[0]
+    # Normalize and round compositions
+    x_norm = normalize_last_axis(np.round(x, 3))
+    x_cache_norm = normalize_last_axis(np.round(x_cache, 3))
 
-    # For arrays, keep as 2D
-    x_norm = pad_to_10d(normalize_last_axis(np.round(x, 3)))
-    x_cache_norm = pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
+    # Combine points from both lines
+    x_all = np.vstack([x_norm, x_cache_norm])
 
-    # Write compositions and get measurements
-    communication.write_compositions(
-        start=best_start_norm,
-        end=best_end_norm,
-        array=x_norm,
-        start_cache=cache_start_norm,
-        end_cache=cache_end_norm,
-        array_cache=x_cache_norm,
-        timestamp=time.time()
-    )
+    # Get predictions from random forest
+    y_pred = rf.predict(x_all)  # Negative since we're minimizing
 
-    y, x_meas = get_y_measurements(x, verbose=True, ready_for_objectives=True)
-
-    return x_meas, y.ravel()
-
-
+    return x_all, y_pred
 
 def run_zombi_main():
-    communication.reset_objective()
-    
+    np.random.seed(28)
+
     # instantiate zombihop class
     dimensions = 3
-    num_activations = 5
+    num_activations = 3
     n_experiments = 24
     max_iterations = 10
     num_samples = 15000
     max_gp_points = 150
-
-    np.random.seed(28)
 
     optimizer = ZoMBIHop(
         objective_function=objective_function,
@@ -3373,7 +2969,7 @@ def run_zombi_main():
         max_gp_points=max_gp_points,
         penalty_zoom_percentage=0.6,
         max_iterations=max_iterations,
-        tolerance=1e-3,
+        tolerance=1e-2,
         top_m_points=max(4, dimensions),
         num_samples=num_samples,
         max_zoom_levels=2,
@@ -3393,14 +2989,6 @@ def run_zombi_main():
     X_init_actual = np.zeros((0, dimensions))  # Empty n=0, d=dimensions array
     Y_init = np.zeros((0,))  # Empty n=0 array
 
-    # Create a temporary wrapper for initialization that uses objective_function_init
-    def init_objective_function_wrapper(line_endpoints):
-        return objective_function_init(line_endpoints)
-    
-    # Temporarily replace the objective function for initialization
-    original_objective_function = optimizer.objective_function
-    optimizer.objective_function = init_objective_function_wrapper
-
     for point in start_points:
         # Ensure point is a CPU numpy array
         if hasattr(point, 'cpu'):
@@ -3410,9 +2998,6 @@ def run_zombi_main():
         X_init_actual = np.vstack((X_init_actual, X_actual))
         Y_init = np.append(Y_init, Y_actual)
 
-    # Restore the original objective function for the main optimization
-    optimizer.objective_function = original_objective_function
-
     print(X_init_actual, Y_init)
     print("--------------------------------")
     print("should be the same as above:")
@@ -3420,57 +3005,20 @@ def run_zombi_main():
 
     # Run the main ZoMBI-Hop optimization
     results = optimizer.run_zombi_hop()
-    
+
     # Plot convergence at the end
     print("\n" + "="*60)
     print("📊 GENERATING CONVERGENCE PLOT")
     print("="*60)
-    
+
     # Ensure figs directory exists
     import os
     os.makedirs("./figs", exist_ok=True)
-    
+
     optimizer.plot_convergence(save_path="./figs/zombi_convergence_plot.png")
-    
+
     print(results)
 
-def update_objective_memory_db(objectives):
-    """
-    Update the objective_memory.db with new objectives after optimization is complete.
-    This ensures we only update memory after we've confirmed the data is new and used.
-    """
-    try:
-        mem_db_path = "./sql/objective_memory.db"
-        mem_conn = sqlite3.connect(mem_db_path, timeout=10.0)
-        mem_cur = mem_conn.cursor()
-        mem_cur.execute("DROP TABLE IF EXISTS objective")
-        mem_cur.execute("CREATE TABLE objective (val REAL)")
-        # Insert new objectives
-        for val in objectives:
-            mem_cur.execute("INSERT INTO objective (val) VALUES (?)", (float(val),))
-        mem_conn.commit()
-        mem_conn.close()
-        print(f"[update_objective_memory_db] Memory DB updated with {len(objectives)} objectives after optimization.")
-    except Exception as e:
-        print(f"[update_objective_memory_db] Error updating memory DB: {e}")
 
-
-def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
-    """
-    Normalize an array along its last axis so that the values sum to 1.
-
-    Parameters
-    ----------
-    arr : array-like of shape (..., 10)
-        Input data. Can be 1-D (10,) or 2-D (n, 10), or higher-dimensional
-        as long as the last axis is length 10.
-
-    Returns
-    -------
-    normalized : np.ndarray
-        Array of same shape as `arr`, with values along the last axis
-        scaled to sum to 1.
-    """
-    a = np.asarray(arr, dtype=float)
-    sums = a.sum(axis=-1, keepdims=True)
-    return a / sums
+if __name__ == "__main__":
+    run_zombi_main()

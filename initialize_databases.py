@@ -26,6 +26,17 @@ def initialize_db():
     cursor.execute("CREATE TABLE objective    (id INTEGER PRIMARY KEY)")
     col_defs = ", ".join(f"col_{i} REAL" for i in range(10))
     cursor.execute(f"CREATE TABLE compositions ({col_defs})")
+    # Add handshake table to objective.db
+    obj_db_path = './sql/objective.db'
+    handshake_conn = sqlite3.connect(obj_db_path)
+    handshake_cur = handshake_conn.cursor()
+    handshake_cur.execute('''CREATE TABLE IF NOT EXISTS handshake (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        new_objective_available INTEGER DEFAULT 0
+    )''')
+    handshake_cur.execute('INSERT OR IGNORE INTO handshake (id, new_objective_available) VALUES (1, 0)')
+    handshake_conn.commit()
+    handshake_conn.close()
     conn.commit()
     conn.close()
     # =============================== #

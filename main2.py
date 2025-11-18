@@ -1,0 +1,169 @@
+import os
+import multiprocessing
+import signal
+import time
+import sys
+from pathlib import Path
+from initialize_databases import initialize_db
+from communication import start_serial_dual_io_shared_port
+import communication
+from zombihop_linebo_v2 import run_zombi_main_v2
+
+
+def list_runs_and_exit():
+    base = Path('actual_runs')
+    print("Available trials in 'actual_runs':")
+    print("="*80)
+    if not base.exists():
+        print("No trials found.")
+        return
+    trials = [d for d in base.iterdir() if d.is_dir()]
+    if not trials:
+        print("No trials found.")
+    else:
+        for td in sorted(trials):
+            print(f"\nTrial directory: {td.name}")
+            checkpoints_dir = td / 'checkpoints'
+            if checkpoints_dir.exists():
+                for run_dir in sorted(checkpoints_dir.iterdir()):
+                    if run_dir.is_dir() and run_dir.name.startswith('run_'):
+                        uuid = run_dir.name.replace('run_', '')
+                        meta = td / 'trial_metadata.json'
+                        if meta.exists():
+                            import json
+                            with open(meta, 'r') as f:
+                                m = json.load(f)
+                            print(f"  UUID: {uuid} ({m.get('num_minima','?')} minima, {m.get('dimensions','?')}D, {m.get('time_limit_hours','?')}h)")
+                        else:
+                            print(f"  UUID: {uuid}")
+            else:
+                print("  No checkpoints found")
+
+
+def start_serial():
+    try:
+        start_serial_dual_io_shared_port(
+            COM="COM5",
+            baud=9600,
+            obj_hz=1.0,
+            comp_hz=1.0,
+            chaos=True
+        )
+    except Exception as e:
+        print(f"[Serial Process] Error: {e}")
+        sys.exit(1)
+
+
+def start_zombi():
+    try:
+        time.sleep(2)
+        print("[ZoMBI Process] Starting ZoMBI-Hop v2 (DB-driven)...")
+        run_zombi_main_v2()
+    except Exception as e:
+        print(f"[ZoMBI Process] Error: {e}")
+        sys.exit(1)
+
+
+def signal_handler(signum, frame):
+    print(f"\n[Main2] Received signal {signum}, shutting down processes...")
+    sys.exit(0)
+
+
+def main():
+    Path('actual_runs').mkdir(exist_ok=True)
+
+    # No CLI behavior for resume/list; mirror main1.py closely
+
+    # Hard reset all DBs and communication state
+    initialize_db()
+    communication.reset_objective()
+    communication.reset_compositions()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    try:
+        initialize_db()
+        print("[Main2] Databases initialized successfully")
+    except Exception as e:
+        print(f"[Main2] Error initializing databases: {e}")
+        sys.exit(1)
+
+    multiprocessing.set_start_method("spawn", force=True)
+
+    p_serial = multiprocessing.Process(target=start_serial, name="SerialIO")
+    p_zombi = multiprocessing.Process(target=start_zombi, name="ZoMBI")
+
+    try:
+        print("[Main2] Starting serial communication process...")
+        p_serial.start()
+        time.sleep(3)
+        if not p_serial.is_alive():
+            print("[Main2] Serial process failed to start or died immediately")
+            sys.exit(1)
+
+        print("[Main2] Starting ZoMBI-Hop optimization process...")
+        p_zombi.start()
+
+        while True:
+            if not p_serial.is_alive():
+                print("[Main2] Serial process died unexpectedly")
+                if p_zombi.is_alive():
+                    print("[Main2] Terminating ZoMBI process...")
+                    p_zombi.terminate()
+                    p_zombi.join(timeout=5)
+                break
+
+            if not p_zombi.is_alive():
+                print("[Main2] ZoMBI process completed or died")
+                if p_serial.is_alive():
+                    print("[Main2] Terminating serial process...")
+                    p_serial.terminate()
+                    p_serial.join(timeout=5)
+                break
+
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\n[Main2] KeyboardInterrupt received, shutting down...")
+    except Exception as e:
+        print(f"[Main2] Unexpected error: {e}")
+    finally:
+        print("[Main2] Cleaning up processes...")
+
+        if p_serial.is_alive():
+            print("[Main2] Terminating serial process...")
+            p_serial.terminate()
+            p_serial.join(timeout=5)
+            if p_serial.is_alive():
+                print("[Main2] Force killing serial process...")
+                p_serial.kill()
+
+        try:
+            import serial
+            port_name = "COM5"
+            try:
+                s = serial.Serial(port_name)
+                if s.is_open:
+                    print(f"[Main2] Closing serial port {port_name}...")
+                    s.close()
+            except Exception as e:
+                print(f"[Main2] Could not close port {port_name}: {e}")
+        except Exception as e:
+            print(f"[Main2] Serial port cleanup skipped or failed: {e}")
+
+        if p_zombi.is_alive():
+            print("[Main2] Terminating ZoMBI process...")
+            p_zombi.terminate()
+            p_zombi.join(timeout=5)
+            if p_zombi.is_alive():
+                print("[Main2] Force killing ZoMBI process...")
+                p_zombi.kill()
+
+        print("[Main2] Cleanup complete")
+
+
+if __name__ == "__main__":
+    main()
+
+

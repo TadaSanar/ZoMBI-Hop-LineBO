@@ -69,7 +69,6 @@ def run_zombi_main():
 
     X_all, Y_all, needle_locs, needles = zombi.run_experimental(n_droplets=n_droplets, n_vectors=11, verbose = True, plot = False)
 
-
     if plot == True:
         
         plt.figure(figsize=(10,4))

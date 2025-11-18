@@ -1,0 +1,6 @@
+# Ignore all directories
+*/
+
+# But keep the data directory
+!data/
+
