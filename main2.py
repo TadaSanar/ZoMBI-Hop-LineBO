@@ -1,3 +1,24 @@
+"""
+ZoMBI-Hop v2 Main Launcher with Database Communication
+
+This script starts two parallel processes:
+1. Serial communication process (Archerfish interface)
+2. ZoMBI-Hop v2 optimization process
+
+Usage:
+    python main2.py              # Start new trial
+    python main2.py <uuid>       # Resume trial from 4-digit UUID
+    python main2.py list         # List available trials
+
+Examples:
+    python main2.py              # New trial
+    python main2.py a2fe         # Resume trial with UUID 'a2fe'
+    python main2.py list         # Show all available trials
+
+The trial UUID will be printed when starting. Use Ctrl+C to stop gracefully.
+Checkpoints are saved automatically to: actual_runs/checkpoints/run_<uuid>/
+"""
+
 import os
 import multiprocessing
 import signal
@@ -54,11 +75,14 @@ def start_serial():
         sys.exit(1)
 
 
-def start_zombi():
+def start_zombi(resume_uuid=None):
     try:
         time.sleep(2)
-        print("[ZoMBI Process] Starting ZoMBI-Hop v2 (DB-driven)...")
-        run_zombi_main_v2()
+        if resume_uuid:
+            print(f"[ZoMBI Process] Resuming ZoMBI-Hop v2 with UUID: {resume_uuid}...")
+        else:
+            print("[ZoMBI Process] Starting ZoMBI-Hop v2 (DB-driven)...")
+        run_zombi_main_v2(resume_uuid=resume_uuid)
     except Exception as e:
         print(f"[ZoMBI Process] Error: {e}")
         sys.exit(1)
@@ -72,12 +96,28 @@ def signal_handler(signum, frame):
 def main():
     Path('actual_runs').mkdir(exist_ok=True)
 
-    # No CLI behavior for resume/list; mirror main1.py closely
+    # Parse command line arguments
+    resume_uuid = None
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        
+        # Check for 'list' command
+        if arg.lower() == 'list':
+            list_runs_and_exit()
+            sys.exit(0)
+        
+        # Otherwise treat as resume UUID
+        resume_uuid = arg
+        print(f"[Main2] Resume UUID provided: {resume_uuid}")
 
-    # Hard reset all DBs and communication state
-    initialize_db()
-    communication.reset_objective()
-    communication.reset_compositions()
+    # Hard reset all DBs and communication state ONLY if starting new trial
+    if resume_uuid is None:
+        initialize_db()
+        communication.reset_objective()
+        communication.reset_compositions()
+        print("[Main2] Database reset complete (new trial)")
+    else:
+        print("[Main2] Skipping database reset (resuming trial)")
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -92,7 +132,7 @@ def main():
     multiprocessing.set_start_method("spawn", force=True)
 
     p_serial = multiprocessing.Process(target=start_serial, name="SerialIO")
-    p_zombi = multiprocessing.Process(target=start_zombi, name="ZoMBI")
+    p_zombi = multiprocessing.Process(target=start_zombi, args=(resume_uuid,), name="ZoMBI")
 
     try:
         print("[Main2] Starting serial communication process...")
@@ -164,6 +204,15 @@ def main():
 
 
 if __name__ == "__main__":
+    # Show help if requested
+    if len(sys.argv) > 1 and sys.argv[1] in ['-h', '--help', 'help']:
+        print(__doc__)
+        print("\nCurrent configuration:")
+        print(f"  Serial port: COM5")
+        print(f"  Checkpoint directory: actual_runs/checkpoints/")
+        print(f"  Device: {'CUDA' if __import__('torch').cuda.is_available() else 'CPU'}")
+        sys.exit(0)
+    
     main()
 
 
