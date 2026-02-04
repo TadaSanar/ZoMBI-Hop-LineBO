@@ -1,6 +1,35 @@
-# Ignore all directories
-*/
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
 
-# But keep the data directory
-!data/
+# Unit test / coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
 
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# SQLite DBs (runtime artifacts)
+sql/*.db
+
+# Checkpoints / runs (runtime artifacts)
+actual_runs/# Large binaries
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.h5
+*.hdf5

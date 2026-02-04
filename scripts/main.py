@@ -6,14 +6,14 @@ This script starts two parallel processes:
 2. ZoMBI-Hop v2 optimization process
 
 Usage:
-    python main2.py              # Start new trial
-    python main2.py <uuid>       # Resume trial from 4-digit UUID
-    python main2.py list         # List available trials
+    python -m scripts.main              # Start new trial
+    python -m scripts.main <uuid>       # Resume trial from UUID
+    python -m scripts.main list         # List available trials
 
 Examples:
-    python main2.py              # New trial
-    python main2.py a2fe         # Resume trial with UUID 'a2fe'
-    python main2.py list         # Show all available trials
+    python -m scripts.main              # New trial
+    python -m scripts.main a2fe         # Resume trial with UUID 'a2fe'
+    python -m scripts.main list         # Show all available trials
 
 The trial UUID will be printed when starting. Use Ctrl+C to stop gracefully.
 Checkpoints are saved automatically to: actual_runs/checkpoints/run_<uuid>/
@@ -25,10 +25,11 @@ import signal
 import time
 import sys
 from pathlib import Path
-from initialize_databases import initialize_db
-from communication import start_serial_dual_io_shared_port
-import communication
-from zombihop_linebo_v2 import run_zombi_main_v2
+
+from scripts.initialize_databases import initialize_db
+from scripts.communication import start_serial_dual_io_shared_port
+from scripts import communication
+from scripts.run_zombi_main import run_zombi_main
 
 
 def list_runs_and_exit():
@@ -82,14 +83,14 @@ def start_zombi(resume_uuid=None):
             print(f"[ZoMBI Process] Resuming ZoMBI-Hop v2 with UUID: {resume_uuid}...")
         else:
             print("[ZoMBI Process] Starting ZoMBI-Hop v2 (DB-driven)...")
-        run_zombi_main_v2(resume_uuid=resume_uuid)
+        run_zombi_main(resume_uuid=resume_uuid)
     except Exception as e:
         print(f"[ZoMBI Process] Error: {e}")
         sys.exit(1)
 
 
 def signal_handler(signum, frame):
-    print(f"\n[Main2] Received signal {signum}, shutting down processes...")
+    print(f"\n[Main] Received signal {signum}, shutting down processes...")
     sys.exit(0)
 
 
@@ -100,12 +101,12 @@ def main():
     resume_uuid = None
     if len(sys.argv) > 1:
         arg = sys.argv[1]
-        
+
         # Check for 'list' command
         if arg.lower() == 'list':
             list_runs_and_exit()
             sys.exit(0)
-        
+
         # Otherwise treat as resume UUID
         resume_uuid = arg
         print(f"[Main2] Resume UUID provided: {resume_uuid}")
@@ -115,18 +116,18 @@ def main():
         initialize_db()
         communication.reset_objective()
         communication.reset_compositions()
-        print("[Main2] Database reset complete (new trial)")
+        print("[Main] Database reset complete (new trial)")
     else:
-        print("[Main2] Skipping database reset (resuming trial)")
+        print("[Main] Skipping database reset (resuming trial)")
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         initialize_db()
-        print("[Main2] Databases initialized successfully")
+        print("[Main] Databases initialized successfully")
     except Exception as e:
-        print(f"[Main2] Error initializing databases: {e}")
+        print(f"[Main] Error initializing databases: {e}")
         sys.exit(1)
 
     multiprocessing.set_start_method("spawn", force=True)
@@ -135,29 +136,29 @@ def main():
     p_zombi = multiprocessing.Process(target=start_zombi, args=(resume_uuid,), name="ZoMBI")
 
     try:
-        print("[Main2] Starting serial communication process...")
+        print("[Main] Starting serial communication process...")
         p_serial.start()
         time.sleep(3)
         if not p_serial.is_alive():
-            print("[Main2] Serial process failed to start or died immediately")
+            print("[Main] Serial process failed to start or died immediately")
             sys.exit(1)
 
-        print("[Main2] Starting ZoMBI-Hop optimization process...")
+        print("[Main] Starting ZoMBI-Hop optimization process...")
         p_zombi.start()
 
         while True:
             if not p_serial.is_alive():
-                print("[Main2] Serial process died unexpectedly")
+                print("[Main] Serial process died unexpectedly")
                 if p_zombi.is_alive():
-                    print("[Main2] Terminating ZoMBI process...")
+                    print("[Main] Terminating ZoMBI process...")
                     p_zombi.terminate()
                     p_zombi.join(timeout=5)
                 break
 
             if not p_zombi.is_alive():
-                print("[Main2] ZoMBI process completed or died")
+                print("[Main] ZoMBI process completed or died")
                 if p_serial.is_alive():
-                    print("[Main2] Terminating serial process...")
+                    print("[Main] Terminating serial process...")
                     p_serial.terminate()
                     p_serial.join(timeout=5)
                 break
@@ -165,18 +166,18 @@ def main():
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n[Main2] KeyboardInterrupt received, shutting down...")
+        print("\n[Main] KeyboardInterrupt received, shutting down...")
     except Exception as e:
-        print(f"[Main2] Unexpected error: {e}")
+        print(f"[Main] Unexpected error: {e}")
     finally:
-        print("[Main2] Cleaning up processes...")
+        print("[Main] Cleaning up processes...")
 
         if p_serial.is_alive():
-            print("[Main2] Terminating serial process...")
+            print("[Main] Terminating serial process...")
             p_serial.terminate()
             p_serial.join(timeout=5)
             if p_serial.is_alive():
-                print("[Main2] Force killing serial process...")
+                print("[Main] Force killing serial process...")
                 p_serial.kill()
 
         try:
@@ -185,22 +186,22 @@ def main():
             try:
                 s = serial.Serial(port_name)
                 if s.is_open:
-                    print(f"[Main2] Closing serial port {port_name}...")
+                    print(f"[Main] Closing serial port {port_name}...")
                     s.close()
             except Exception as e:
-                print(f"[Main2] Could not close port {port_name}: {e}")
+                print(f"[Main] Could not close port {port_name}: {e}")
         except Exception as e:
-            print(f"[Main2] Serial port cleanup skipped or failed: {e}")
+            print(f"[Main] Serial port cleanup skipped or failed: {e}")
 
         if p_zombi.is_alive():
-            print("[Main2] Terminating ZoMBI process...")
+            print("[Main] Terminating ZoMBI process...")
             p_zombi.terminate()
             p_zombi.join(timeout=5)
             if p_zombi.is_alive():
-                print("[Main2] Force killing ZoMBI process...")
+                print("[Main] Force killing ZoMBI process...")
                 p_zombi.kill()
 
-        print("[Main2] Cleanup complete")
+        print("[Main] Cleanup complete")
 
 
 if __name__ == "__main__":
@@ -212,7 +213,5 @@ if __name__ == "__main__":
         print(f"  Checkpoint directory: actual_runs/checkpoints/")
         print(f"  Device: {'CUDA' if __import__('torch').cuda.is_available() else 'CPU'}")
         sys.exit(0)
-    
+
     main()
-
-
