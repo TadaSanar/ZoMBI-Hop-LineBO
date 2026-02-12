@@ -404,6 +404,8 @@ class GPSimplex:
             bounds=bounds,
             initial_conditions=initial_conditions,
         )
+        if best_candidate is not None and best_value is not None:
+            print(f"  [GP] get_candidate: best_candidate = {best_candidate.cpu().numpy()}, best_acq_value = {best_value.item():.6f}")
 
         # Verify the candidate is not penalized
         if best_candidate is not None:

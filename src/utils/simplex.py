@@ -8,6 +8,7 @@ in materials research applications.
 The simplex constraint ensures that compositions sum to 1:
     x_1 + x_2 + ... + x_d = 1, x_i >= 0
 """
+from __future__ import annotations
 
 import torch
 import numpy as np

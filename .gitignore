@@ -26,7 +26,11 @@ venv/
 sql/*.db
 
 # Checkpoints / runs (runtime artifacts)
-actual_runs/# Large binaries
+actual_runs/
+old_stuff/
+results_2000/
+
+# Large binaries
 *.pt
 *.pth
 *.pkl

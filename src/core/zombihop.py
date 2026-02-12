@@ -6,10 +6,12 @@ A novel Bayesian optimization algorithm for discovering multiple optima
 in simplex-constrained spaces, designed for materials research applications.
 """
 
+# PyTorch and standard library
 import torch
 import time
 from typing import Callable, Tuple, Optional, List
 
+# Simplex utilities: projection, random sampling, zero-sum directions
 from ..utils.simplex import (
     proj_simplex,
     random_simplex,
@@ -20,7 +22,7 @@ from ..utils.gp_simplex import GPSimplex
 from ..utils.dataclasses import ZoMBIHopConfig
 
 
-# CUDA optimization settings
+# --- CUDA optimization settings (when CUDA is available) ---
 if torch.cuda.is_available():
     torch.cuda.set_per_process_memory_fraction(0.95)
     torch.backends.cudnn.benchmark = True
@@ -108,10 +110,10 @@ class ZoMBIHop:
 
     def __init__(self,
                  objective,
-                 bounds: torch.Tensor,
-                 X_init_actual: torch.Tensor,
-                 X_init_expected: torch.Tensor,
-                 Y_init: torch.Tensor,
+                 bounds: torch.Tensor,           # (2, d): [lower_bounds, upper_bounds]
+                 X_init_actual: torch.Tensor,   # (n, d): initial observed locations
+                 X_init_expected: torch.Tensor, # (n, d): initial requested locations
+                 Y_init: torch.Tensor,          # (n, 1): initial observed values
                  proj_fn: Optional[Callable] = None,
                  random_sampler: Optional[Callable] = None,
                  random_direction_sampler: Optional[Callable] = None,
@@ -136,12 +138,12 @@ class ZoMBIHop:
                  max_checkpoints: Optional[int] = 50,
                  verbose: bool = True):
         """Initialize ZoMBIHop optimizer."""
-        # Computer parameters
+        # --- Compute/device parameters ---
         self.device = torch.device(device)
         self.dtype = dtype
         self.verbose = verbose
 
-        # CUDA optimization
+        # --- CUDA optimization (clear cache, optional print) ---
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
             if self.verbose:
@@ -155,52 +157,52 @@ class ZoMBIHop:
 
         self.objective = objective
 
-        # Bounds and dimensionality
+        # --- Bounds and dimensionality ---
+        # bounds: (2, d) — row0 = lower bounds, row1 = upper bounds
         self.d = bounds.shape[1]
         bounds = bounds.clone().to(device=self.device, dtype=self.dtype)
         assert bounds.shape == (2, self.d), "bounds must be a (2, d) torch tensor"
 
-        # Auto-compute top_m_points if not provided: max(d + 1, 4)
+        # --- Auto-compute top_m_points if not provided: max(d + 1, 4) ---
         # Rationale: d+1 points define a simplex, minimum of 4 for stability
         if top_m_points is None:
             top_m_points = max(self.d + 1, 4)
             if self.verbose:
                 print(f"Auto-computed top_m_points = {top_m_points} (based on d={self.d})")
 
-        # ZoMBIHop parameters
+        # --- ZoMBIHop parameters (zoom levels, iterations, GP size) ---
         self.max_zooms = max_zooms
         self.max_iterations = max_iterations
         self.top_m_points = top_m_points
         self.max_gp_points = max_gp_points
 
-        # Finding next point parameters
+        # --- Finding next point parameters (acquisition optimization) ---
         self.n_restarts = n_restarts
         self.raw = raw
 
-        # Penalization parameters
+        # --- Penalization parameters (threshold, radius, directions) ---
         self.penalization_threshold = penalization_threshold
         self.penalty_max_radius = penalty_max_radius
         
-        # Auto-compute penalty_num_directions if not provided: 10 * d
+        # --- Auto-compute penalty_num_directions if not provided: 10 * d ---
         if penalty_num_directions is None:
             penalty_num_directions = 10 * self.d
             if self.verbose:
                 print(f"Auto-computed penalty_num_directions = {penalty_num_directions} (based on d={self.d})")
         self.penalty_num_directions = penalty_num_directions
         
-        # penalty_radius_step: None means auto-compute based on input noise at runtime
-        # (input noise not available until we have data, so defer computation)
+        # penalty_radius_step: None = auto-compute from input noise at runtime
         self.penalty_radius_step = penalty_radius_step
 
-        # Convergence parameters
+        # --- Convergence parameters (no-improvement count, noise multipliers) ---
         self.improvement_threshold_noise_mult = improvement_threshold_noise_mult
         self.input_noise_threshold_mult = input_noise_threshold_mult
         self.n_consecutive_no_improvements = n_consecutive_no_improvements
 
-        # Acquisition parameters - repulsion_lambda=None means auto-compute dynamically
+        # --- Acquisition: repulsion_lambda=None => auto-compute dynamically ---
         self.repulsion_lambda = repulsion_lambda
 
-        # Build config dataclass for saving
+        # --- Build config dataclass for checkpointing ---
         self.config = ZoMBIHopConfig(
             max_zooms=max_zooms,
             max_iterations=max_iterations,
@@ -219,7 +221,7 @@ class ZoMBIHop:
             dtype=str(self.dtype),
         )
 
-        # Initialize data handler
+        # --- Initialize data handler (checkpoints, state, GP data) ---
         self.data_handler = DataHandler(
             directory=checkpoint_dir,
             run_uuid=run_uuid,
@@ -232,7 +234,7 @@ class ZoMBIHop:
             max_gp_points=max_gp_points,
         )
 
-        # Check if resuming from saved run
+        # --- Resume from checkpoint or start fresh ---
         if run_uuid is not None:
             if self.verbose:
                 print(f"Resuming from saved run: {run_uuid}")
@@ -245,22 +247,23 @@ class ZoMBIHop:
                 if checkpoint_dir:
                     print(f"Checkpoint directory: {self.data_handler.run_dir}")
 
-            # Initialize with provided data
+            # --- Initialize with provided data (move to device, validate shapes) ---
+            # X_init_actual: (n, d), X_init_expected: (n, d), Y_init: (n, 1)
             X_init_actual = X_init_actual.clone().to(device=self.device, dtype=self.dtype)
             X_init_expected = X_init_expected.clone().to(device=self.device, dtype=self.dtype)
             Y_init = Y_init.clone().to(device=self.device, dtype=self.dtype)
 
-            assert X_init_actual.shape[1] == self.d, "X_init_actual must be a (n, d) torch tensor"
-            assert X_init_expected.shape[1] == self.d, "X_init_expected must be a (n, d) torch tensor"
-            assert Y_init.shape[1] == 1, "Y_init must be a (n, 1) torch tensor"
+            assert X_init_actual.shape[1] == self.d, "X_init_actual must be (n, d)"
+            assert X_init_expected.shape[1] == self.d, "X_init_expected must be (n, d)"
+            assert Y_init.shape[1] == 1, "Y_init must be (n, 1)"
             assert X_init_actual.shape[0] == X_init_expected.shape[0] == Y_init.shape[0]
 
             self.data_handler.save_init(X_init_actual, X_init_expected, Y_init, bounds)
 
-        # Store bounds reference
+        # --- Bounds reference (from data_handler; shape (2, d)) ---
         self.bounds = self.data_handler.bounds
 
-        # Initialize GP handler
+        # --- Initialize GP handler (acquisition, fitting, penalty radius) ---
         self.gp_handler = GPSimplex(
             data_handler=self.data_handler,
             proj_fn=self.proj_fn,
@@ -272,14 +275,35 @@ class ZoMBIHop:
             dtype=self.dtype,
         )
 
+    # --- Properties: expose data handler state ---
+    @property
+    def run_uuid(self) -> str:
+        """Run UUID (from data handler)."""
+        return self.data_handler.run_uuid
+
+    @property
+    def current_activation(self) -> int:
+        """Current activation index (from data handler)."""
+        return self.data_handler.current_activation
+
+    @property
+    def current_zoom(self) -> int:
+        """Current zoom level (from data handler)."""
+        return self.data_handler.current_zoom
+
+    @property
+    def current_iteration(self) -> int:
+        """Current iteration (from data handler)."""
+        return self.data_handler.current_iteration
+
     def _log(self, message: str):
-        """Print message if verbose mode is enabled."""
+        """Print message if verbose is True."""
         if self.verbose:
             print(message)
 
     def _log_status(self, activation: int, zoom: int, iteration: int,
                     candidate: Optional[torch.Tensor], no_improvements: int):
-        """Print current status."""
+        """Print current status. candidate: (d,) if not None."""
         if self.verbose:
             candidate_str = f"{candidate.cpu().numpy()}" if candidate is not None else "None"
             print(f"[A{activation+1}/Z{zoom+1}/I{iteration+1}] "
@@ -290,12 +314,23 @@ class ZoMBIHop:
         """
         Call objective and update data handler.
 
+        Parameters
+        ----------
+        X : torch.Tensor
+            Candidate point, shape (d,).
+        bounds : torch.Tensor
+            Search bounds, shape (2, d).
+        acquisition_function : callable
+            Acquisition function used by objective.
+
         Returns
         -------
-        tuple
-            (unpenalized_X, unpenalized_Y) for points not in penalty regions.
+        tuple of (torch.Tensor, torch.Tensor)
+            unpenalized_X: (n_unpen, d), unpenalized_Y: (n_unpen,) — points not in penalty regions.
         """
+        # X: (d,) — single candidate
         assert X.shape == (self.d,)
+        # Objective returns: X_expected (n, d), X_actual (n, d), Y (n,) — often n=1
         X_expected, X_actual, Y = self.objective(X, bounds, acquisition_function)
 
         X_expected = X_expected.to(device=self.device, dtype=self.dtype)
@@ -311,9 +346,10 @@ class ZoMBIHop:
         assert Y.ndim == 1
         assert X_expected.shape[0] == X_actual.shape[0] == Y.shape[0]
 
-        # Add to data handler and get penalty mask for new points
+        # Add to data handler; penalty_mask: (n,) bool — True where point is not in penalty region
         penalty_mask = self.data_handler.add_all_points(X_actual, X_expected, Y.unsqueeze(1))
 
+        # unpenalized_Y: (n_unpen,), unpenalized_X: (n_unpen, d)
         unpenalized_Y = Y[penalty_mask]
         unpenalized_X = X_actual[penalty_mask]
         return unpenalized_X, unpenalized_Y
@@ -332,7 +368,11 @@ class ZoMBIHop:
         Returns
         -------
         tuple
-            (needles_results, needles, needle_vals, X_all_actual, Y_all)
+            needles_results: list of needle result dicts;
+            needles: tensor (n_needles, d) — needle locations;
+            needle_vals: tensor (n_needles,) or list — needle values;
+            X_all_actual: (n_total, d) — all evaluated points;
+            Y_all: (n_total, 1) — all observed values.
         """
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
@@ -341,14 +381,17 @@ class ZoMBIHop:
         start_time = time.time() if time_limit_hours is not None else None
 
         finished = False
+        # activation, zoom, iteration: int; no_improvements: int
         activation, zoom, iteration, no_improvements = self.data_handler.get_iteration_state()
         start_activation = activation
 
+        # --- Main loop: one activation = one “hopping” cycle (zoom → iterate → maybe find needle) ---
         while activation < max_activations and not finished:
             self._log(f"\n{'='*50}")
             self._log(f"ACTIVATION {activation+1}/{max_activations}")
             self._log(f"{'='*50}")
 
+            # --- Time limit check (optional) ---
             if time_limit_hours is not None:
                 elapsed_hours = (time.time() - start_time) / 3600.0
                 if elapsed_hours >= time_limit_hours:
@@ -364,21 +407,25 @@ class ZoMBIHop:
             if activation > start_activation or zoom == 0:
                 no_improvements = 0
             needle = None
+            # bounds: (2, d) — current zoom bounds
             bounds = self.bounds.clone()
             activation_failed = False
 
             start_zoom = zoom if activation == start_activation else 0
+            # --- Zoom loop: narrow search region each zoom level ---
             for zoom in range(start_zoom, self.max_zooms):
                 self._log(f"\n--- Zoom {zoom+1}/{self.max_zooms} ---")
                 self._log(f"Bounds: {bounds}")
 
-                # Fit GP
+                # X: (n_gp, d), Y: (n_gp, 1) — data used for GP fit
                 X, Y = self.data_handler.get_gp_data()
                 self._log(f"GP data points: {X.shape[0]}")
                 self.gp_handler.fit(X, Y)
 
                 start_iteration = iteration if (activation == start_activation and zoom == start_zoom) else 0
+                # --- Iteration loop: propose candidate, evaluate, check convergence ---
                 for iteration in range(start_iteration, self.max_iterations):
+                    # --- Optional time limit per iteration ---
                     if time_limit_hours is not None:
                         elapsed_hours = (time.time() - start_time) / 3600.0
                         if elapsed_hours >= time_limit_hours:
@@ -387,8 +434,10 @@ class ZoMBIHop:
                             self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_timeout", is_permanent=True)
                             break
 
-                    # Get candidate
+                    # candidate: (d,) or None — next point to evaluate
                     candidate = self.gp_handler.get_candidate(bounds, best_f=Y.max().item())
+                    if self.verbose and candidate is not None:
+                        self._log(f"  [ZoMBIHop] GP suggested candidate (acquisition argmax): {candidate.cpu().numpy()}")
 
                     if candidate is None:
                         self._log("No valid candidate found (all in penalized regions)")
@@ -397,16 +446,20 @@ class ZoMBIHop:
                         break
 
                     self._log_status(activation, zoom, iteration, candidate, no_improvements)
+                    if self.verbose:
+                        self._log(f"  [ZoMBIHop] Calling objective (LineBO samples lines through this candidate)...")
 
-                    # Get previous best for comparison
+                    # prev_best_X: (d,), prev_best_Y: scalar tensor or None
                     prev_best_X, prev_best_Y, _ = self.data_handler.get_best_unpenalized()
 
-                    # Sample the candidate
+                    # Evaluate candidate; unpenalized_X: (n_unpen, d), unpenalized_Y: (n_unpen,)
                     unpenalized_X, unpenalized_Y = self._objective_wrapper(
                         candidate, bounds, self.gp_handler.acq_fn
                     )
+                    if self.verbose and unpenalized_X.shape[0] > 0:
+                        self._log(f"  [ZoMBIHop] Objective returned {unpenalized_X.shape[0]} points, Y in [{unpenalized_Y.min().item():.4f}, {unpenalized_Y.max().item():.4f}]")
 
-                    # Refit GP with new data
+                    # Refit GP; X: (n_gp, d), Y: (n_gp, 1)
                     X, Y = self.data_handler.get_gp_data()
                     self.gp_handler.fit(X, Y)
 
@@ -416,16 +469,16 @@ class ZoMBIHop:
                         self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_failed", is_permanent=True)
                         break
 
-                    # Get current best
+                    # curr_best_X: (d,), curr_best_Y: (1,) scalar tensor
                     curr_best_X, curr_best_Y, _ = self.data_handler.get_best_unpenalized()
 
-                    # Calculate improvement thresholds
+                    # Scalar thresholds for “no improvement” detection
                     output_noise = self.gp_handler.get_output_noise()
                     input_noise = self.data_handler.get_normalized_input_noise()
                     output_improvement_threshold = self.improvement_threshold_noise_mult * output_noise
                     input_change_threshold = self.input_noise_threshold_mult * input_noise
 
-                    # Check for improvement
+                    # input_distance: scalar; compare to prev best
                     input_distance = torch.norm(curr_best_X - prev_best_X)
                     if prev_best_Y is not None:
                         improvement = curr_best_Y.item() - prev_best_Y.item()
@@ -436,7 +489,7 @@ class ZoMBIHop:
                     else:
                         no_improvements = 0
 
-                    # Update state and checkpoint
+                    # Persist state and optional checkpoint
                     self.data_handler.update_iteration_state(activation, zoom, iteration, no_improvements)
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}", is_permanent=False)
 
@@ -444,18 +497,19 @@ class ZoMBIHop:
                               f"Current max Y: {curr_best_Y.item():.4f} | "
                               f"Overall max: {self.data_handler.Y_all[self.data_handler.get_penalty_mask()].max().item():.4f}")
 
-                    # Check if we've converged to a needle
+                    # Converged to a local optimum (needle): penalize region and optionally zoom/restart
                     if no_improvements >= self.n_consecutive_no_improvements:
+                        # needle_X: (d,), needle_Y: scalar, global_idx: int
                         needle_X, needle_Y, global_idx = self.data_handler.get_best_unpenalized()
 
                         self._log(f"\n*** Found needle at {needle_X.cpu().numpy()} with value {needle_Y.item():.4f} ***")
 
-                        # Refit GP on full bounds for penalty radius determination
+                        # Refit GP on full data for penalty radius; X: (n_gp, d), Y: (n_gp, 1)
                         X, Y = self.data_handler.get_gp_data()
                         self.gp_handler.fit(X, Y)
                         self.gp_handler.create_acquisition(best_f=Y.max().item(), penalty_value=-1e6)
 
-                        # Determine penalty radius
+                        # penalty_radius: scalar — radius around needle to penalize
                         penalty_radius = self.gp_handler.determine_penalty_radius(
                             needle=needle_X,
                             penalization_threshold=self.penalization_threshold,
@@ -482,11 +536,13 @@ class ZoMBIHop:
                     break
 
                 if needle is not None or activation_failed:
-                    # Check if too much area is penalized
+                    # Check fraction of search space that is penalized
+                    # test_samples: (raw, d) — random points in simplex
                     test_samples = self.random_sampler(
                         self.raw, self.bounds[0], self.bounds[1],
                         device=str(self.device), torch_dtype=self.dtype
                     )
+                    # unpenalized_mask: (raw,) bool — True where sample is not in any penalty ball
                     unpenalized_mask = self.data_handler.get_penalty_mask(test_samples)
                     penalized_percentage = (1 - unpenalized_mask.float().mean().item()) * 100
 
@@ -498,6 +554,7 @@ class ZoMBIHop:
 
                 if finished:
                     break
+                # Zoom in: new bounds (2, d) around top_m best points
                 if zoom < self.max_zooms - 1:
                     bounds = self.data_handler.determine_new_bounds()
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_complete", is_permanent=True)
@@ -514,7 +571,7 @@ class ZoMBIHop:
         self._log(f"\nOptimization complete. Run UUID: {self.data_handler.run_uuid}")
         self._log(f"Found {len(self.data_handler.needles_results)} needles")
 
-        # Return results
+        # X_all_actual: (n_total, d), Y_all: (n_total, 1); return needle results and all data
         X_all_actual, _, Y_all = self.data_handler.get_all_points()
         return (
             self.data_handler.get_needle_results(),
@@ -524,10 +581,10 @@ class ZoMBIHop:
             Y_all
         )
 
-    # Keep static methods for backward compatibility, but they now delegate to simplex.py
+    # --- Static methods: backward compatibility; delegate to simplex utils ---
     @staticmethod
     def proj_simplex(X):
-        """Project points onto the simplex (differentiable)."""
+        """Project points onto the simplex (differentiable). X: (n, d) -> (n, d)."""
         return proj_simplex(X)
 
     @staticmethod
@@ -542,10 +599,10 @@ class ZoMBIHop:
         torch_dtype: torch.dtype = torch.float64,
         **ignored,
     ) -> torch.Tensor:
-        """Generate CFS samples from bounded simplex."""
+        """Generate CFS samples from bounded simplex. a, b: (d,); returns (num_samples, d)."""
         return random_simplex(num_samples, a, b, S, max_batch, debug, device, torch_dtype, **ignored)
 
     @staticmethod
     def random_zero_sum_directions(n: int, d: int, device='cuda') -> torch.Tensor:
-        """Sample n vectors of dimension d with zero sum and unit norm."""
+        """Sample n vectors of dimension d with zero sum and unit norm. Returns (n, d)."""
         return random_zero_sum_directions(n, d, device=device)
