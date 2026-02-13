@@ -211,6 +211,57 @@ class GPSimplex:
             return 0.0
         return self.gp.likelihood.noise_covar.noise.mean().item()
 
+    def probability_of_improvement(self, x: torch.Tensor, best_f: float) -> float:
+        """
+        P(f(x) > best_f) under the GP posterior at x.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Query point (d,) or (1, d).
+        best_f : float
+            Current best observed value.
+
+        Returns
+        -------
+        float
+            Probability of improvement, in [0, 1].
+        """
+        if self.gp is None:
+            return 0.0
+        x_2d = x.unsqueeze(0) if x.dim() == 1 else x
+        with torch.no_grad():
+            posterior = self.gp.posterior(x_2d)
+            mu = posterior.mean.squeeze().item()
+            var = posterior.variance.squeeze().item()
+        sigma = max(var ** 0.5, 1e-9)
+        z = (mu - best_f) / sigma
+        return torch.distributions.Normal(0.0, 1.0).cdf(torch.tensor(z, device=self.device)).item()
+
+    def compute_log_ei_at_point(self, x: torch.Tensor, best_f: float) -> float:
+        """
+        Log Expected Improvement at x for maximization (best_f = current best).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Query point (d,) or (1, d).
+        best_f : float
+            Current best observed value.
+
+        Returns
+        -------
+        float
+            log(EI(x)).
+        """
+        if self.gp is None:
+            return float('-inf')
+        x_3d = x.unsqueeze(0).unsqueeze(0) if x.dim() == 1 else x.reshape(1, 1, -1)
+        base_acq = LogExpectedImprovement(self.gp, best_f=best_f)
+        with torch.no_grad():
+            val = base_acq(x_3d).squeeze().item()
+        return val
+
     def create_acquisition(
         self,
         best_f: Optional[float] = None,

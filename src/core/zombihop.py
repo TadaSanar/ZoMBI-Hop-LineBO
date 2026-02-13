@@ -83,12 +83,10 @@ class ZoMBIHop:
     penalty_radius_step : float, optional
         Step size for penalty radius search. If None, auto-computed based on
         input noise as max(3 * input_noise, 0.005). Default: None (auto).
-    improvement_threshold_noise_mult : float
-        Multiplier for output noise threshold. Default: 2.0.
-    input_noise_threshold_mult : float
-        Multiplier for input noise threshold. Default: 3.0.
-    n_consecutive_no_improvements : int
-        Consecutive iterations without improvement to trigger hopping. Default: 5.
+    convergence_pi_threshold : float
+        Probability of Improvement threshold; converge when PI < this. Default: 0.01.
+    convergence_window : int
+        Window size for stagnation check (recent vs older best). Default: 5.
     max_gp_points : int
         Maximum points for GP fitting. Default: 3000.
     repulsion_lambda : float, optional
@@ -126,9 +124,8 @@ class ZoMBIHop:
                  penalty_num_directions: Optional[int] = None,
                  penalty_max_radius: float = 0.3,
                  penalty_radius_step: Optional[float] = None,
-                 improvement_threshold_noise_mult: float = 2.0,
-                 input_noise_threshold_mult: float = 3.0,
-                 n_consecutive_no_improvements: int = 5,
+                 convergence_pi_threshold: float = 0.01,
+                 convergence_window: int = 5,
                  max_gp_points: int = 3000,
                  repulsion_lambda: Optional[float] = None,
                  device: str = 'cuda',
@@ -194,10 +191,10 @@ class ZoMBIHop:
         # penalty_radius_step: None = auto-compute from input noise at runtime
         self.penalty_radius_step = penalty_radius_step
 
-        # --- Convergence parameters (no-improvement count, noise multipliers) ---
-        self.improvement_threshold_noise_mult = improvement_threshold_noise_mult
-        self.input_noise_threshold_mult = input_noise_threshold_mult
-        self.n_consecutive_no_improvements = n_consecutive_no_improvements
+        # --- Convergence parameters (Probability of Improvement + stagnation window) ---
+        self.convergence_pi_threshold = convergence_pi_threshold
+        self.convergence_window = convergence_window
+        self.log_ei_history: List[float] = []
 
         # --- Acquisition: repulsion_lambda=None => auto-compute dynamically ---
         self.repulsion_lambda = repulsion_lambda
@@ -213,9 +210,8 @@ class ZoMBIHop:
             penalty_num_directions=penalty_num_directions,
             penalty_max_radius=penalty_max_radius,
             penalty_radius_step=penalty_radius_step,
-            improvement_threshold_noise_mult=improvement_threshold_noise_mult,
-            input_noise_threshold_mult=input_noise_threshold_mult,
-            n_consecutive_no_improvements=n_consecutive_no_improvements,
+            convergence_pi_threshold=convergence_pi_threshold,
+            convergence_window=convergence_window,
             repulsion_lambda=repulsion_lambda,  # May be None (auto-computed) or user-provided
             device=str(self.device),
             dtype=str(self.dtype),
@@ -238,7 +234,7 @@ class ZoMBIHop:
         if run_uuid is not None:
             if self.verbose:
                 print(f"Resuming from saved run: {run_uuid}")
-            activation, zoom, iteration, no_improvements = self.data_handler.load_state()
+            activation, zoom, iteration, _ = self.data_handler.load_state()
             if self.verbose:
                 print(f"Loaded state: activation={activation}, zoom={zoom}, iteration={iteration}")
         else:
@@ -302,13 +298,56 @@ class ZoMBIHop:
             print(message)
 
     def _log_status(self, activation: int, zoom: int, iteration: int,
-                    candidate: Optional[torch.Tensor], no_improvements: int):
-        """Print current status. candidate: (d,) if not None."""
+                    candidate: Optional[torch.Tensor], pi: Optional[float] = None):
+        """Print current status. candidate: (d,) if not None. pi: Probability of Improvement for logging."""
         if self.verbose:
             candidate_str = f"{candidate.cpu().numpy()}" if candidate is not None else "None"
-            print(f"[A{activation+1}/Z{zoom+1}/I{iteration+1}] "
-                  f"Candidate: {candidate_str} | "
-                  f"No improvements: {no_improvements}")
+            extra = f" | PI={pi:.4f}" if pi is not None else ""
+            print(f"[A{activation+1}/Z{zoom+1}/I{iteration+1}] Candidate: {candidate_str}{extra}")
+
+    def _check_convergence_to_needle(self, candidate: torch.Tensor) -> Tuple[bool, float, float]:
+        """
+        Check if we have converged to a local optimum (needle) using PI + stagnation.
+
+        Criteria:
+        1. Probability of Improvement at candidate < convergence_pi_threshold
+        2. Stagnation: best in recent window not meaningfully better than best before (2 * output_noise)
+
+        Returns
+        -------
+        tuple
+            (converged, pi, log_ei) for logging.
+        """
+        X, Y = self.data_handler.get_gp_data()
+        best_f = Y.max().item()
+        n = Y.shape[0]
+        Y_flat = Y.squeeze()
+
+        pi = 0.0
+        log_ei = float('-inf')
+        try:
+            pi = self.gp_handler.probability_of_improvement(candidate, best_f)
+            log_ei = self.gp_handler.compute_log_ei_at_point(candidate, best_f)
+        except Exception:
+            pass
+        self.log_ei_history.append(log_ei)
+
+        pi_low = pi < self.convergence_pi_threshold
+
+        if n < self.convergence_window + 1:
+            stagnant = False
+            improvement = 0.0
+        else:
+            recent_best = Y_flat[-self.convergence_window:].max().item()
+            old_best = Y_flat[:-self.convergence_window].max().item()
+            improvement = recent_best - old_best
+            output_noise = self.gp_handler.get_output_noise()
+            stagnant = improvement < 2.0 * output_noise
+
+        converged = pi_low and stagnant
+        if converged and self.verbose:
+            self._log(f"Converged: PI={pi:.4f}, improvement={improvement:.2e}, logEI={log_ei:.2f}")
+        return converged, pi, log_ei
 
     def _objective_wrapper(self, X: torch.Tensor, bounds: torch.Tensor, acquisition_function) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -381,8 +420,7 @@ class ZoMBIHop:
         start_time = time.time() if time_limit_hours is not None else None
 
         finished = False
-        # activation, zoom, iteration: int; no_improvements: int
-        activation, zoom, iteration, no_improvements = self.data_handler.get_iteration_state()
+        activation, zoom, iteration, _ = self.data_handler.get_iteration_state()
         start_activation = activation
 
         # --- Main loop: one activation = one “hopping” cycle (zoom → iterate → maybe find needle) ---
@@ -404,8 +442,6 @@ class ZoMBIHop:
             if self.device.type == 'cuda' and activation > 0:
                 torch.cuda.empty_cache()
 
-            if activation > start_activation or zoom == 0:
-                no_improvements = 0
             needle = None
             # bounds: (2, d) — current zoom bounds
             bounds = self.bounds.clone()
@@ -442,15 +478,11 @@ class ZoMBIHop:
                     if candidate is None:
                         self._log("No valid candidate found (all in penalized regions)")
                         activation_failed = True
-                        self._log_status(activation, zoom, iteration, None, no_improvements)
+                        self._log_status(activation, zoom, iteration, None)
                         break
 
-                    self._log_status(activation, zoom, iteration, candidate, no_improvements)
                     if self.verbose:
                         self._log(f"  [ZoMBIHop] Calling objective (LineBO samples lines through this candidate)...")
-
-                    # prev_best_X: (d,), prev_best_Y: scalar tensor or None
-                    prev_best_X, prev_best_Y, _ = self.data_handler.get_best_unpenalized()
 
                     # Evaluate candidate; unpenalized_X: (n_unpen, d), unpenalized_Y: (n_unpen,)
                     unpenalized_X, unpenalized_Y = self._objective_wrapper(
@@ -472,34 +504,17 @@ class ZoMBIHop:
                     # curr_best_X: (d,), curr_best_Y: (1,) scalar tensor
                     curr_best_X, curr_best_Y, _ = self.data_handler.get_best_unpenalized()
 
-                    # Scalar thresholds for “no improvement” detection
-                    output_noise = self.gp_handler.get_output_noise()
-                    input_noise = self.data_handler.get_normalized_input_noise()
-                    output_improvement_threshold = self.improvement_threshold_noise_mult * output_noise
-                    input_change_threshold = self.input_noise_threshold_mult * input_noise
-
-                    # input_distance: scalar; compare to prev best
-                    input_distance = torch.norm(curr_best_X - prev_best_X)
-                    if prev_best_Y is not None:
-                        improvement = curr_best_Y.item() - prev_best_Y.item()
-                        if improvement < output_improvement_threshold and input_distance < input_change_threshold:
-                            no_improvements += 1
-                        else:
-                            no_improvements = 0
-                    else:
-                        no_improvements = 0
-
-                    # Persist state and optional checkpoint
-                    self.data_handler.update_iteration_state(activation, zoom, iteration, no_improvements)
+                    # Convergence: PI + stagnation (after refit); “no improvement” detection
+                    converged, pi, log_ei = self._check_convergence_to_needle(candidate)
+                    self._log_status(activation, zoom, iteration, candidate, pi=pi)
+                    self.data_handler.update_iteration_state(activation, zoom, iteration, 0)
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}", is_permanent=False)
 
-                    self._log(f"No improvements: {no_improvements} | "
-                              f"Current max Y: {curr_best_Y.item():.4f} | "
+                    self._log(f"Current max Y: {curr_best_Y.item():.4f} | "
                               f"Overall max: {self.data_handler.Y_all[self.data_handler.get_penalty_mask()].max().item():.4f}")
 
                     # Converged to a local optimum (needle): penalize region and optionally zoom/restart
-                    if no_improvements >= self.n_consecutive_no_improvements:
-                        # needle_X: (d,), needle_Y: scalar, global_idx: int
+                    if converged:
                         needle_X, needle_Y, global_idx = self.data_handler.get_best_unpenalized()
 
                         self._log(f"\n*** Found needle at {needle_X.cpu().numpy()} with value {needle_Y.item():.4f} ***")

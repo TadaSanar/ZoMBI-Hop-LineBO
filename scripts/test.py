@@ -3,7 +3,10 @@ Quick test of ZoMBIHop + LineBO with L2-distance objective on the simplex.
 
 Minimizes f(x) = ||x - target||_2 over x on the simplex (d-dimensional).
 Uses 24 experiments per line. Artificially adds noise to inputs and outputs.
+Convergence uses Probability of Improvement + stagnation window (same as main).
 ZoMBIHop parameters match scripts/run_zombi_main.py (main.py).
+
+Run: python -m scripts.test
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ from src.core.linebo import batch_line_simplex_segments, zero_sum_dirs
 
 # Simplex dimension and experiments per line (same as run_zombi_main NUM_EXPERIMENTS)
 NUM_EXPERIMENTS = 24
-DIMENSIONS = 10
+DIMENSIONS = 2  # Use 2 for fast smoke test; 10 for higher-dim check
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Artificial noise (same scale as typical run; ZoMBIHop uses input/output noise thresholds)
@@ -28,8 +31,8 @@ OUTPUT_NOISE_STD = 0.001  # std of Gaussian noise added to outputs (objective va
 # ZoMBIHop maximizes the objective, so we minimize distance by returning objective = -distance.
 MINIMIZE_DISTANCE_OBJECTIVE = True  # if True, return y = -distance so maximizer minimizes distance
 
-# Print candidate, line endpoints, and Y stats every time the objective is called (to debug repeated candidates).
-DEBUG_OBJECTIVE = True
+# Print candidate, line endpoints, and Y stats every time the objective is called (set True to debug).
+DEBUG_OBJECTIVE = False
 
 
 def l2_objective(
@@ -153,9 +156,8 @@ def main():
         X_init_expected=X_init_expected,
         Y_init=Y_init,
         penalization_threshold=0.0005915,
-        improvement_threshold_noise_mult=3.0783849,
-        input_noise_threshold_mult=4.01076,
-        n_consecutive_no_improvements=4,
+        convergence_pi_threshold=0.01,
+        convergence_window=5,
         max_zooms=5,
         max_iterations=7,
         top_m_points=max(dimensions + 1, 4),
