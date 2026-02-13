@@ -85,8 +85,10 @@ class ZoMBIHop:
         input noise as max(3 * input_noise, 0.005). Default: None (auto).
     convergence_pi_threshold : float
         Probability of Improvement threshold; converge when PI < this. Default: 0.01.
-    convergence_window : int
-        Window size for stagnation check (recent vs older best). Default: 5.
+    input_noise_threshold_mult : float
+        Multiplier for input noise; converge when best X from batch is within this * input_noise of prev best. Default: 2.0.
+    output_noise_threshold_mult : float
+        Multiplier for output noise; converge when best Y from batch improves by less than this * output_noise. Default: 2.0.
     max_gp_points : int
         Maximum points for GP fitting. Default: 3000.
     repulsion_lambda : float, optional
@@ -125,7 +127,8 @@ class ZoMBIHop:
                  penalty_max_radius: float = 0.3,
                  penalty_radius_step: Optional[float] = None,
                  convergence_pi_threshold: float = 0.01,
-                 convergence_window: int = 5,
+                 input_noise_threshold_mult: float = 2.0,
+                 output_noise_threshold_mult: float = 2.0,
                  max_gp_points: int = 3000,
                  repulsion_lambda: Optional[float] = None,
                  device: str = 'cuda',
@@ -191,9 +194,10 @@ class ZoMBIHop:
         # penalty_radius_step: None = auto-compute from input noise at runtime
         self.penalty_radius_step = penalty_radius_step
 
-        # --- Convergence parameters (Probability of Improvement + stagnation window) ---
+        # --- Convergence parameters (PI + input/output noise thresholds) ---
         self.convergence_pi_threshold = convergence_pi_threshold
-        self.convergence_window = convergence_window
+        self.input_noise_threshold_mult = input_noise_threshold_mult
+        self.output_noise_threshold_mult = output_noise_threshold_mult
         self.log_ei_history: List[float] = []
 
         # --- Acquisition: repulsion_lambda=None => auto-compute dynamically ---
@@ -211,7 +215,8 @@ class ZoMBIHop:
             penalty_max_radius=penalty_max_radius,
             penalty_radius_step=penalty_radius_step,
             convergence_pi_threshold=convergence_pi_threshold,
-            convergence_window=convergence_window,
+            input_noise_threshold_mult=input_noise_threshold_mult,
+            output_noise_threshold_mult=output_noise_threshold_mult,
             repulsion_lambda=repulsion_lambda,  # May be None (auto-computed) or user-provided
             device=str(self.device),
             dtype=str(self.dtype),
@@ -305,24 +310,36 @@ class ZoMBIHop:
             extra = f" | PI={pi:.4f}" if pi is not None else ""
             print(f"[A{activation+1}/Z{zoom+1}/I{iteration+1}] Candidate: {candidate_str}{extra}")
 
-    def _check_convergence_to_needle(self, candidate: torch.Tensor) -> Tuple[bool, float, float]:
+    def _check_convergence_to_needle(
+        self,
+        candidate: torch.Tensor,
+        unpenalized_X: torch.Tensor,
+        unpenalized_Y: torch.Tensor,
+        prev_best_X: Optional[torch.Tensor],
+        prev_best_Y: Optional[torch.Tensor],
+    ) -> Tuple[bool, float, float]:
         """
-        Check if we have converged to a local optimum (needle) using PI + stagnation.
+        Check if we have converged to a local optimum (needle).
 
-        Criteria:
-        1. Probability of Improvement at candidate < convergence_pi_threshold
-        2. Stagnation: best in recent window not meaningfully better than best before (2 * output_noise)
+        Uses the last unpenalized batch from the objective: latest best = argmax Y in that batch,
+        and the corresponding X. Converge when:
+        1. PI at candidate < convergence_pi_threshold
+        2. Latest best Y improves by less than output_noise * output_noise_threshold_mult over prev best Y
+        3. Latest best X is within input_noise * input_noise_threshold_mult (distance) of prev best X
 
         Returns
         -------
         tuple
             (converged, pi, log_ei) for logging.
         """
+        if unpenalized_X.shape[0] == 0:
+            return False, 0.0, float('-inf')
+        idx = unpenalized_Y.argmax().item()
+        latest_best_X = unpenalized_X[idx : idx + 1].squeeze(0)
+        latest_best_Y = unpenalized_Y[idx].item()
+
         X, Y = self.data_handler.get_gp_data()
         best_f = Y.max().item()
-        n = Y.shape[0]
-        Y_flat = Y.squeeze()
-
         pi = 0.0
         log_ei = float('-inf')
         try:
@@ -331,22 +348,24 @@ class ZoMBIHop:
         except Exception:
             pass
         self.log_ei_history.append(log_ei)
-
         pi_low = pi < self.convergence_pi_threshold
 
-        if n < self.convergence_window + 1:
-            stagnant = False
+        if prev_best_X is None or prev_best_Y is None:
+            converged = False
             improvement = 0.0
+            input_distance = 0.0
         else:
-            recent_best = Y_flat[-self.convergence_window:].max().item()
-            old_best = Y_flat[:-self.convergence_window].max().item()
-            improvement = recent_best - old_best
             output_noise = self.gp_handler.get_output_noise()
-            stagnant = improvement < 2.0 * output_noise
+            input_noise = self.data_handler.get_normalized_input_noise()
+            prev_y = prev_best_Y.item() if torch.is_tensor(prev_best_Y) else prev_best_Y
+            improvement = latest_best_Y - prev_y
+            input_distance = torch.norm(latest_best_X - prev_best_X).item()
+            output_within_noise = improvement < (output_noise * self.output_noise_threshold_mult)
+            input_within_noise = input_distance < (input_noise * self.input_noise_threshold_mult)
+            converged = pi_low and output_within_noise and input_within_noise
 
-        converged = pi_low and stagnant
         if converged and self.verbose:
-            self._log(f"Converged: PI={pi:.4f}, improvement={improvement:.2e}, logEI={log_ei:.2f}")
+            self._log(f"Converged: PI={pi:.4f}, improvement={improvement:.2e}, input_dist={input_distance:.2e}, logEI={log_ei:.2f}")
         return converged, pi, log_ei
 
     def _objective_wrapper(self, X: torch.Tensor, bounds: torch.Tensor, acquisition_function) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -481,6 +500,9 @@ class ZoMBIHop:
                         self._log_status(activation, zoom, iteration, None)
                         break
 
+                    # Previous best (before this batch) for convergence comparison
+                    prev_best_X, prev_best_Y, _ = self.data_handler.get_best_unpenalized()
+
                     if self.verbose:
                         self._log(f"  [ZoMBIHop] Calling objective (LineBO samples lines through this candidate)...")
 
@@ -505,7 +527,9 @@ class ZoMBIHop:
                     curr_best_X, curr_best_Y, _ = self.data_handler.get_best_unpenalized()
 
                     # Convergence: PI + stagnation (after refit); “no improvement” detection
-                    converged, pi, log_ei = self._check_convergence_to_needle(candidate)
+                    converged, pi, log_ei = self._check_convergence_to_needle(
+                        candidate, unpenalized_X, unpenalized_Y, prev_best_X, prev_best_Y
+                    )
                     self._log_status(activation, zoom, iteration, candidate, pi=pi)
                     self.data_handler.update_iteration_state(activation, zoom, iteration, 0)
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}", is_permanent=False)

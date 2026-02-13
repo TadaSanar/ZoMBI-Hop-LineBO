@@ -29,9 +29,10 @@ class ZoMBIHopConfig:
     penalty_max_radius: float = 0.3
     penalty_radius_step: Optional[float] = None  # Auto-computed from input noise if None
 
-    # Convergence parameters (Probability of Improvement + stagnation window)
+    # Convergence parameters (PI + noise-based Y/X thresholds)
     convergence_pi_threshold: float = 0.01
-    convergence_window: int = 5
+    input_noise_threshold_mult: float = 2.0
+    output_noise_threshold_mult: float = 2.0
 
     # GP parameters
     max_gp_points: int = 3000
@@ -79,7 +80,8 @@ class ZoMBIHopConfig:
         # penalty_radius_step can be None (auto-computed from input noise) or positive
         assert self.penalty_radius_step is None or self.penalty_radius_step > 0, "penalty_radius_step must be None or positive"
         assert 0 <= self.convergence_pi_threshold <= 1, "convergence_pi_threshold must be in [0, 1]"
-        assert self.convergence_window > 0, "convergence_window must be positive"
+        assert self.input_noise_threshold_mult > 0, "input_noise_threshold_mult must be positive"
+        assert self.output_noise_threshold_mult > 0, "output_noise_threshold_mult must be positive"
         assert self.max_gp_points > 0, "max_gp_points must be positive"
         # repulsion_lambda can be None (auto-computed) or positive
         assert self.repulsion_lambda is None or self.repulsion_lambda > 0, "repulsion_lambda must be None or positive"
@@ -105,7 +107,8 @@ class Checkpoint:
     penalty_max_radius: float
     penalty_radius_step: Optional[float]  # Can be None (auto-computed)
     convergence_pi_threshold: float
-    convergence_window: int
+    input_noise_threshold_mult: float
+    output_noise_threshold_mult: float
     max_gp_points: int
     device: str
     dtype: str
