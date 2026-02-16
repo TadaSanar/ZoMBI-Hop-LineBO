@@ -3,7 +3,8 @@ LineBO: Line-based Bayesian Optimization for Simplex Constraints
 ================================================================
 
 LineBO optimizes over the probability simplex by:
-1. Sampling zero-sum directions (so lines stay in the simplex-affine subspace).
+1. Sampling lines from the candidate point through random simplex points, extended to the boundary
+   (guarantees valid segments), or alternatively zero-sum directions.
 2. Finding each line's intersection with the simplex (segment endpoints on the boundary).
 3. Integrating an acquisition function along segments and picking the best line.
 4. Evaluating the objective along that line and returning requested/actual points and values.
@@ -16,9 +17,81 @@ import torch
 import torch.nn as nn
 from typing import Tuple, Optional
 
+from ..utils.simplex import sample_simplex
+
 # Resampling limits (worst-case caps)
 ZERO_SUM_DIR_MAX_RESAMPLE = 100   # max resamples for zero-norm rows in zero_sum_dirs (default: 100)
 SAMPLER_MAX_EXTRA_ATTEMPTS = 50  # max extra direction batches in LineBO.sampler when valid lines < num_lines (default: 50)
+MIN_DIRECTION_NORM = 1e-10        # directions with smaller norm (P ≈ x_tell) are dropped when using through-simplex sampling
+
+
+def directions_through_simplex_points(x0: torch.Tensor, k: int, device=None, dtype=torch.float64,
+                                     seed=None) -> torch.Tensor:
+    """
+    Generate directions from x0 through k random points on the simplex. Each line from x0 through
+    a random point is extended to the simplex boundary, guaranteeing a valid segment.
+
+    Parameters
+    ----------
+    x0 : torch.Tensor
+        Candidate point (d,) on the simplex.
+    k : int
+        Number of directions to generate.
+    device : str, optional
+        Torch device.
+    dtype : torch.dtype
+        Data type.
+    seed : int, optional
+        Random seed (not used; sample_simplex may use global state).
+
+    Returns
+    -------
+    torch.Tensor
+        (k, d) tensor of unit-norm direction vectors. May have fewer than k rows if too many
+        random points coincided with x0 (resamples once to try to fill).
+    """
+    d = x0.shape[0]
+    x0 = x0.to(device=device, dtype=dtype)
+    # Sample more than k points so we can drop any that equal x0 (or are too close)
+    n_sample = max(k * 2, k + 10)
+    P = sample_simplex(n_sample, d, device=device, dtype=dtype)  # (n_sample, d)
+    D = P - x0.unsqueeze(0)  # (n_sample, d)
+    norms = D.norm(dim=1, keepdim=True)
+    keep = (norms.squeeze(1) > MIN_DIRECTION_NORM)
+    D = D[keep] / norms[keep]
+    if D.shape[0] >= k:
+        return D[:k]
+    if D.shape[0] == 0:
+        return torch.zeros(0, d, device=device, dtype=dtype)
+    # Resample once to try to reach k
+    P2 = sample_simplex(n_sample, d, device=device, dtype=dtype)
+    D2 = P2 - x0.unsqueeze(0)
+    norms2 = D2.norm(dim=1, keepdim=True)
+    keep2 = (norms2.squeeze(1) > MIN_DIRECTION_NORM)
+    D2 = D2[keep2] / norms2[keep2]
+    D = torch.cat([D, D2], dim=0)
+    return D[:k] if D.shape[0] >= k else D
+
+
+def canonical_zero_sum_directions(d: int, device=None, dtype=torch.float64) -> torch.Tensor:
+    """
+    Return zero-sum directions that are guaranteed to yield valid simplex segments
+    from any point on the simplex (at least d-1 valid at a vertex, up to d*(d-1)/2 in interior).
+    Directions are e_i - e_j (normalized) for i < j.
+    """
+    out = []
+    for i in range(d):
+        for j in range(i + 1, d):
+            direction = torch.zeros(d, device=device, dtype=dtype)
+            direction[i] = 1.0
+            direction[j] = -1.0
+            n = direction.norm()
+            if n > 0:
+                direction = direction / n
+            out.append(direction)
+    if not out:
+        return torch.zeros(0, d, device=device, dtype=dtype)
+    return torch.stack(out, dim=0)
 
 
 def zero_sum_dirs(k: int, d: int, device=None, dtype=torch.float64, seed=None) -> torch.Tensor:
@@ -269,30 +342,31 @@ class LineBO:
 
         assert abs(x_tell.sum().item() - 1.0) < 1e-12, f"x_tell must sum to 1, got {x_tell.sum().item()}"
 
-        # Sample more directions than needed so we have enough valid (non-degenerate) segments
-        directions = zero_sum_dirs(self.num_lines * 2, self.d,
-                                 device=self.device, dtype=self.dtype)  # (num_lines*2, d)
-
+        # Lines from x_tell through random simplex points, extended to the boundary — guarantees valid segments.
+        directions = directions_through_simplex_points(
+            x_tell, self.num_lines, device=self.device, dtype=self.dtype
+        )
         x_left, x_right, t_min, t_max, valid_mask = batch_line_simplex_segments(x_tell, directions)
-        # x_left, x_right: (num_valid, d); t_min, t_max: (num_valid,); valid_mask: (num_lines*2,) bool
 
-        # If we got fewer valid lines than num_lines, resample and append until we have enough (cap attempts)
+        # If we got fewer than num_lines (rare: many random points coincided with x_tell), refill with more through-simplex then canonical.
         if x_left.shape[0] < self.num_lines:
-            print(f"Warning: Only found {x_left.shape[0]} valid lines, needed {self.num_lines}")
-            for _ in range(SAMPLER_MAX_EXTRA_ATTEMPTS):
-                if x_left.shape[0] >= self.num_lines:
-                    break
-                additional_dirs = zero_sum_dirs(self.num_lines, self.d,
-                                              device=self.device, dtype=self.dtype)  # (num_lines, d)
-                x_left_add, x_right_add, t_min_add, t_max_add, mask_add = batch_line_simplex_segments(x_tell, additional_dirs)
-
-                if x_left_add.shape[0] > 0:
-                    x_left = torch.cat([x_left, x_left_add], dim=0)   # (?, d)
-                    x_right = torch.cat([x_right, x_right_add], dim=0)
-                    t_min = torch.cat([t_min, t_min_add], dim=0)
-                    t_max = torch.cat([t_max, t_max_add], dim=0)
-                else:
-                    break
+            need = self.num_lines - x_left.shape[0]
+            extra = directions_through_simplex_points(x_tell, need, device=self.device, dtype=self.dtype)
+            x_left_e, x_right_e, t_min_e, t_max_e, _ = batch_line_simplex_segments(x_tell, extra)
+            if x_left_e.shape[0] > 0:
+                x_left = torch.cat([x_left, x_left_e], dim=0)
+                x_right = torch.cat([x_right, x_right_e], dim=0)
+                t_min = torch.cat([t_min, t_min_e], dim=0)
+                t_max = torch.cat([t_max, t_max_e], dim=0)
+            if x_left.shape[0] < self.num_lines:
+                canon = canonical_zero_sum_directions(self.d, device=self.device, dtype=self.dtype)
+                x_left_c, x_right_c, t_min_c, t_max_c, _ = batch_line_simplex_segments(x_tell, canon)
+                if x_left_c.shape[0] > 0:
+                    n_take = min(self.num_lines - x_left.shape[0], x_left_c.shape[0])
+                    x_left = torch.cat([x_left, x_left_c[:n_take]], dim=0)
+                    x_right = torch.cat([x_right, x_right_c[:n_take]], dim=0)
+                    t_min = torch.cat([t_min, t_min_c[:n_take]], dim=0)
+                    t_max = torch.cat([t_max, t_max_c[:n_take]], dim=0)
 
         # Trim to exactly num_lines if we have more
         if x_left.shape[0] > self.num_lines:
@@ -301,13 +375,21 @@ class LineBO:
             t_min = t_min[:self.num_lines]
             t_max = t_max[:self.num_lines]
 
+        # Fallback: no valid line segments (e.g. x_tell at vertex / degenerate directions)
+        if x_left.shape[0] == 0:
+            x_left = x_tell.unsqueeze(0)   # (1, d)
+            x_right = x_tell.unsqueeze(0)  # degenerate line
+
         # Pick best line: by max integrated acquisition, or random if no acquisition
         if acquisition_function is None:
             best_idx = torch.randint(0, x_left.shape[0], (1,), device=self.device).item()
         else:
             integrated_values = self._integrate_acquisition_along_lines(
                 x_left, x_right, acquisition_function)  # (num_lines,)
-            best_idx = torch.argmax(integrated_values).item()
+            if integrated_values.numel() == 0:
+                best_idx = 0
+            else:
+                best_idx = torch.argmax(integrated_values).item()
 
         selected_left = x_left[best_idx]   # (d,)
         selected_right = x_right[best_idx]  # (d,)

@@ -89,6 +89,8 @@ class ZoMBIHop:
         Multiplier for input noise; converge when best X from batch is within this * input_noise of prev best. Default: 2.0.
     output_noise_threshold_mult : float
         Multiplier for output noise; converge when best Y from batch improves by less than this * output_noise. Default: 2.0.
+    n_consecutive_converged : int
+        Require this many consecutive iterations where convergence criteria are met before declaring a needle. Default: 2.
     max_gp_points : int
         Maximum points for GP fitting. Default: 3000.
     repulsion_lambda : float, optional
@@ -129,6 +131,7 @@ class ZoMBIHop:
                  convergence_pi_threshold: float = 0.01,
                  input_noise_threshold_mult: float = 2.0,
                  output_noise_threshold_mult: float = 2.0,
+                 n_consecutive_converged: int = 2,
                  max_gp_points: int = 3000,
                  repulsion_lambda: Optional[float] = None,
                  device: str = 'cuda',
@@ -183,14 +186,14 @@ class ZoMBIHop:
         # --- Penalization parameters (threshold, radius, directions) ---
         self.penalization_threshold = penalization_threshold
         self.penalty_max_radius = penalty_max_radius
-        
+
         # --- Auto-compute penalty_num_directions if not provided: 10 * d ---
         if penalty_num_directions is None:
             penalty_num_directions = 10 * self.d
             if self.verbose:
                 print(f"Auto-computed penalty_num_directions = {penalty_num_directions} (based on d={self.d})")
         self.penalty_num_directions = penalty_num_directions
-        
+
         # penalty_radius_step: None = auto-compute from input noise at runtime
         self.penalty_radius_step = penalty_radius_step
 
@@ -198,6 +201,7 @@ class ZoMBIHop:
         self.convergence_pi_threshold = convergence_pi_threshold
         self.input_noise_threshold_mult = input_noise_threshold_mult
         self.output_noise_threshold_mult = output_noise_threshold_mult
+        self.n_consecutive_converged = n_consecutive_converged
         self.log_ei_history: List[float] = []
 
         # --- Acquisition: repulsion_lambda=None => auto-compute dynamically ---
@@ -217,6 +221,7 @@ class ZoMBIHop:
             convergence_pi_threshold=convergence_pi_threshold,
             input_noise_threshold_mult=input_noise_threshold_mult,
             output_noise_threshold_mult=output_noise_threshold_mult,
+            n_consecutive_converged=n_consecutive_converged,
             repulsion_lambda=repulsion_lambda,  # May be None (auto-computed) or user-provided
             device=str(self.device),
             dtype=str(self.dtype),
@@ -325,7 +330,7 @@ class ZoMBIHop:
         and the corresponding X. Converge when:
         1. PI at candidate < convergence_pi_threshold
         2. Latest best Y improves by less than output_noise * output_noise_threshold_mult over prev best Y
-        3. Latest best X is within input_noise * input_noise_threshold_mult (distance) of prev best X
+        # 3. (commented out) Latest best X is within input_noise * input_noise_threshold_mult of prev best X
 
         Returns
         -------
@@ -356,13 +361,13 @@ class ZoMBIHop:
             input_distance = 0.0
         else:
             output_noise = self.gp_handler.get_output_noise()
-            input_noise = self.data_handler.get_normalized_input_noise()
+            # input_noise = self.data_handler.get_normalized_input_noise()
             prev_y = prev_best_Y.item() if torch.is_tensor(prev_best_Y) else prev_best_Y
             improvement = latest_best_Y - prev_y
             input_distance = torch.norm(latest_best_X - prev_best_X).item()
             output_within_noise = improvement < (output_noise * self.output_noise_threshold_mult)
-            input_within_noise = input_distance < (input_noise * self.input_noise_threshold_mult)
-            converged = pi_low and output_within_noise and input_within_noise
+            # input_within_noise = input_distance < (input_noise * self.input_noise_threshold_mult)
+            converged = pi_low and output_within_noise  # and input_within_noise  # input noise check commented out
 
         if converged and self.verbose:
             self._log(f"Converged: PI={pi:.4f}, improvement={improvement:.2e}, input_dist={input_distance:.2e}, logEI={log_ei:.2f}")
@@ -478,6 +483,7 @@ class ZoMBIHop:
                 self.gp_handler.fit(X, Y)
 
                 start_iteration = iteration if (activation == start_activation and zoom == start_zoom) else 0
+                consecutive_converged = 0  # Require N consecutive converged before declaring needle
                 # --- Iteration loop: propose candidate, evaluate, check convergence ---
                 for iteration in range(start_iteration, self.max_iterations):
                     # --- Optional time limit per iteration ---
@@ -489,7 +495,7 @@ class ZoMBIHop:
                             self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_timeout", is_permanent=True)
                             break
 
-                    # candidate: (d,) or None — next point to evaluate
+                    # candidate: (d,) or None
                     candidate = self.gp_handler.get_candidate(bounds, best_f=Y.max().item())
                     if self.verbose and candidate is not None:
                         self._log(f"  [ZoMBIHop] GP suggested candidate (acquisition argmax): {candidate.cpu().numpy()}")
@@ -530,16 +536,23 @@ class ZoMBIHop:
                     converged, pi, log_ei = self._check_convergence_to_needle(
                         candidate, unpenalized_X, unpenalized_Y, prev_best_X, prev_best_Y
                     )
+                    if converged:
+                        consecutive_converged += 1
+                    else:
+                        consecutive_converged = 0
                     self._log_status(activation, zoom, iteration, candidate, pi=pi)
+                    if consecutive_converged > 0:
+                        self._log(f"Convergence count: {consecutive_converged}/{self.n_consecutive_converged}")
                     self.data_handler.update_iteration_state(activation, zoom, iteration, 0)
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}", is_permanent=False)
 
                     self._log(f"Current max Y: {curr_best_Y.item():.4f} | "
                               f"Overall max: {self.data_handler.Y_all[self.data_handler.get_penalty_mask()].max().item():.4f}")
 
-                    # Converged to a local optimum (needle): penalize region and optionally zoom/restart
-                    if converged:
+                    # Declare needle only after N consecutive converged iterations
+                    if consecutive_converged >= self.n_consecutive_converged:
                         needle_X, needle_Y, global_idx = self.data_handler.get_best_unpenalized()
+                        needle = needle_X  # so we break out of zoom loop and go to next activation
 
                         self._log(f"\n*** Found needle at {needle_X.cpu().numpy()} with value {needle_Y.item():.4f} ***")
 

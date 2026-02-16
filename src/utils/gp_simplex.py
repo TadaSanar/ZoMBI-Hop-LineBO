@@ -13,7 +13,7 @@ from botorch.fit import fit_gpytorch_mll
 from botorch.acquisition import LogExpectedImprovement
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch.autograd import grad
-from typing import Optional, Tuple, Callable
+from typing import Optional, Tuple, Callable, List
 
 from .simplex import proj_simplex, random_simplex, random_zero_sum_directions
 from .datahandler import DataHandler
@@ -365,12 +365,16 @@ class GPSimplex:
         bounds: torch.Tensor,
         best_f: Optional[float] = None,
         max_attempts: int = 5,
+        exclude_near: Optional[torch.Tensor] = None,
+        exclude_near_tol: float = 1e-8,
     ) -> Optional[torch.Tensor]:
         """
         Get next candidate point to evaluate.
 
         Uses projected gradient ascent to optimize the acquisition function
-        while staying on the simplex.
+        while staying on the simplex. If exclude_near is set, the best candidate
+        that is not within exclude_near_tol of exclude_near is returned (no two
+        same points in a row).
 
         Parameters
         ----------
@@ -380,6 +384,12 @@ class GPSimplex:
             Best function value so far.
         max_attempts : int
             Maximum attempts to find unpenalized candidates.
+        exclude_near : torch.Tensor, optional
+            Last suggested point(s) to avoid repeating. Shape (d,) or (K, d).
+            If not None, skip candidates within exclude_near_tol of *any* of these
+            points so we don't bounce between the same few local maxima.
+        exclude_near_tol : float
+            Minimum distance from each exclude_near point for a candidate to be allowed. Default 1e-8.
 
         Returns
         -------
@@ -449,20 +459,51 @@ class GPSimplex:
         selected_indices = current_unpenalized_indices[top_unpenalized_indices]
         initial_conditions = current_candidates_3d[selected_indices]  # (num_restarts, 1, d)
 
-        # Optimize using projected gradient ascent
-        best_candidate, best_value = self._optimize_acquisition(
+        # Optimize using projected gradient ascent (all restarts)
+        candidates, values = self._optimize_acquisition(
             acq=acq,
             bounds=bounds,
             initial_conditions=initial_conditions,
         )
-        if best_candidate is not None and best_value is not None:
+
+        if candidates.shape[0] == 0:
+            return None
+
+        # Sort by acquisition value descending (best first)
+        order = torch.argsort(values, descending=True)
+        candidates = candidates[order]
+        values = values[order]
+
+        # If exclude_near set, pick first candidate not within tol of *any* excluded point
+        if exclude_near is not None:
+            exclude_near = exclude_near.to(device=candidates.device, dtype=candidates.dtype)
+            if exclude_near.dim() == 1:
+                exclude_near = exclude_near.unsqueeze(0)  # (1, d)
+            # candidates (R, d), exclude_near (K, d) -> distances (R, K)
+            distances = torch.norm(
+                candidates.unsqueeze(1) - exclude_near.unsqueeze(0), dim=2
+            )
+            allowed = (distances >= exclude_near_tol).all(dim=1)  # (R,)
+            if allowed.any():
+                # Take best allowed candidate
+                best_idx = torch.where(allowed)[0][0]
+                best_candidate = candidates[best_idx]
+                best_value = values[best_idx]
+            else:
+                # All restarts converged to excluded points; fall back to best so we don't stall
+                best_candidate = candidates[0]
+                best_value = values[0]
+        else:
+            best_candidate = candidates[0]
+            best_value = values[0]
+
+        if best_candidate is not None:
             print(f"  [GP] get_candidate: best_candidate = {best_candidate.cpu().numpy()}, best_acq_value = {best_value.item():.6f}")
 
         # Verify the candidate is not penalized
-        if best_candidate is not None:
-            is_valid = self.data_handler.get_penalty_mask(best_candidate.unsqueeze(0))
-            if not is_valid.any():
-                return None
+        is_valid = self.data_handler.get_penalty_mask(best_candidate.unsqueeze(0))
+        if not is_valid.any():
+            return None
 
         return best_candidate
 
@@ -473,9 +514,9 @@ class GPSimplex:
         initial_conditions: torch.Tensor,
         step_size: float = 0.05,
         max_steps: int = 50,
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimize acquisition using projected gradient ascent.
+        Optimize acquisition using projected gradient ascent (all restarts).
 
         Parameters
         ----------
@@ -493,13 +534,12 @@ class GPSimplex:
         Returns
         -------
         tuple
-            (best_candidate, best_value) or (None, None) if failed.
+            (candidates, values): candidates (R, d), values (R,) for all successful restarts.
         """
         num_restarts = initial_conditions.shape[0]
         d = initial_conditions.shape[-1]
-
-        best_x = None
-        best_val = None
+        candidates_list: List[torch.Tensor] = []
+        values_list: List[torch.Tensor] = []
 
         for r in range(num_restarts):
             x = initial_conditions[r].clone()  # (1, d)
@@ -541,16 +581,18 @@ class GPSimplex:
                 except RuntimeError:
                     continue  # Skip on error
 
-            if best_val is None or final_val.item() > best_val.item():
-                best_val = final_val
-                best_x = x
+            candidates_list.append(x.squeeze(-2).squeeze(0))  # (d,)
+            values_list.append(final_val.squeeze())
 
-        if best_x is None:
-            return None, None
+        if len(candidates_list) == 0:
+            return (
+                torch.empty(0, d, device=bounds.device, dtype=bounds.dtype),
+                torch.empty(0, device=bounds.device, dtype=bounds.dtype),
+            )
 
-        # Return flattened candidate
-        candidate = best_x.squeeze()  # (d,)
-        return candidate, best_val
+        candidates = torch.stack(candidates_list, dim=0)  # (R, d)
+        values = torch.stack(values_list, dim=0)  # (R,)
+        return candidates, values
 
     def determine_penalty_radius(
         self,
@@ -588,18 +630,18 @@ class GPSimplex:
             self.create_acquisition()
 
         d = needle.shape[0]
-        
+
         # Auto-compute num_directions if not provided: 10 * d
         if num_directions is None:
             num_directions = 10 * d
-        
+
         # Auto-compute radius_step if not provided: based on input noise
         # Rationale: no point having step size smaller than measurement noise
         if radius_step is None:
             input_noise = self.data_handler.get_input_noise()
             # Use 3x input noise as minimum meaningful step, with floor of 0.005
             radius_step = max(3.0 * input_noise, 0.005)
-        
+
         dirs = random_zero_sum_directions(num_directions, d, device=str(self.device), dtype=self.dtype)
         dirs = dirs / dirs.norm(dim=1, keepdim=True)
 

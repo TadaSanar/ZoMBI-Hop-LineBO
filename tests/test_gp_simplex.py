@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from utils.datahandler import DataHandler
 from utils.gp_simplex import GPSimplex, RepulsiveAcquisition
+from utils.simplex import proj_simplex
 
 
 # Skip tests if botorch not available
@@ -327,6 +328,350 @@ class TestGPSimplexCandidateSelection:
             assert abs(candidate.sum().item() - 1.0) < 0.01
 
 
+class TestAcquisitionOptimizerInterior:
+    """
+    Comprehensive tests for _optimize_acquisition (projected gradient ascent on simplex).
+
+    Verifies that:
+    - The optimizer can find interior maxima when the acquisition favors them.
+    - The optimizer can find vertex/edge maxima when the acquisition favors them.
+    - All returned points stay on the simplex and within bounds.
+    - More steps improve convergence; gradient ascent increases acquisition value.
+    - 2D and 3D simplex; flat and peaked acquisitions; no crashes.
+
+    If these pass, SGD + projection are working; edge-only suggestions in real runs
+    are due to the acquisition (e.g. LogEI) favoring vertices, not broken optimization.
+    """
+
+    @pytest.fixture
+    def gp_2d(self):
+        """GPSimplex for 2D simplex with minimal handler."""
+        handler = DataHandler(
+            directory=None,
+            device="cpu",
+            dtype=torch.float64,
+            d=2,
+        )
+        X = torch.tensor([[0.5, 0.5], [0.3, 0.7], [0.7, 0.3]], dtype=torch.float64)
+        Y = torch.tensor([[-0.1], [-0.2], [-0.2]], dtype=torch.float64)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        handler.save_init(X, X, Y, bounds)
+        gp = GPSimplex(
+            data_handler=handler,
+            num_restarts=6,
+            raw_samples=10,
+            device="cpu",
+            dtype=torch.float64,
+        )
+        gp.proj_fn = proj_simplex
+        return gp
+
+    @pytest.fixture
+    def gp_3d(self):
+        """GPSimplex for 3D simplex."""
+        handler = DataHandler(
+            directory=None,
+            device="cpu",
+            dtype=torch.float64,
+            d=3,
+        )
+        X = torch.tensor(
+            [[0.33, 0.33, 0.34], [0.5, 0.25, 0.25], [0.2, 0.4, 0.4]],
+            dtype=torch.float64,
+        )
+        Y = torch.tensor([[-0.1], [-0.2], [-0.2]], dtype=torch.float64)
+        bounds = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float64)
+        handler.save_init(X, X, Y, bounds)
+        gp = GPSimplex(
+            data_handler=handler,
+            num_restarts=5,
+            raw_samples=10,
+            device="cpu",
+            dtype=torch.float64,
+        )
+        gp.proj_fn = proj_simplex
+        return gp
+
+    def _make_quadratic_acquisition(self, center: torch.Tensor, scale: float = -1.0):
+        """Acquisition = scale * ||x - center||^2 (max at center when scale < 0)."""
+
+        class QuadraticAcquisition(torch.nn.Module):
+            def forward(self, X):
+                if X.dim() == 3:
+                    x = X.squeeze(1)
+                else:
+                    x = X
+                diff = x - center.to(x.device)
+                return scale * (diff ** 2).sum(dim=-1)
+
+        return QuadraticAcquisition()
+
+    def _inits_2d_boundary_and_interior(self):
+        """Mix of boundary and interior initial points for 2D."""
+        return torch.tensor(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.8, 0.2],
+                [0.2, 0.8],
+                [0.5, 0.5],
+                [0.6, 0.4],
+            ],
+            dtype=torch.float64,
+        ).unsqueeze(1)  # (6, 1, 2)
+
+    def test_optimizer_finds_interior_maximum(self, gp_2d):
+        """With acquisition max at center (0.5, 0.5), optimizer should find interior."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq,
+            bounds=bounds,
+            initial_conditions=inits,
+            step_size=0.15,
+            max_steps=40,
+        )
+
+        assert candidates.shape[0] > 0
+        assert candidates.shape[1] == 2
+        best_idx = values.argmax().item()
+        best = candidates[best_idx]
+        dist_to_center = torch.norm(best - center).item()
+        assert dist_to_center < 0.15, (
+            f"Best={best.tolist()}, dist_to_center={dist_to_center:.4f}"
+        )
+        assert abs(best.sum().item() - 1.0) < 0.01
+
+    def test_optimizer_finds_vertex_maximum(self, gp_2d):
+        """With acquisition max at vertex [1, 0], optimizer should find that vertex."""
+        center = torch.tensor([1.0, 0.0], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = torch.tensor(
+            [[0.5, 0.5], [0.3, 0.7], [0.8, 0.2], [0.2, 0.8], [0.6, 0.4], [0.1, 0.9]],
+            dtype=torch.float64,
+        ).unsqueeze(1)
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq,
+            bounds=bounds,
+            initial_conditions=inits,
+            step_size=0.1,
+            max_steps=50,
+        )
+
+        assert candidates.shape[0] > 0
+        best_idx = values.argmax().item()
+        best = candidates[best_idx]
+        dist_to_vertex = torch.norm(best - center).item()
+        assert dist_to_vertex < 0.2, (
+            f"Best={best.tolist()}, dist_to_vertex={dist_to_vertex:.4f}"
+        )
+        assert abs(best.sum().item() - 1.0) < 0.01
+        assert (best >= -0.01).all() and (best <= 1.01).all()
+
+    def test_all_candidates_on_simplex(self, gp_2d):
+        """Every returned candidate must sum to 1 and have non-negative components."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.15, max_steps=30
+        )
+
+        assert candidates.shape[0] > 0
+        for i in range(candidates.shape[0]):
+            c = candidates[i]
+            assert abs(c.sum().item() - 1.0) < 1e-5, f"Candidate {i} sum = {c.sum().item()}"
+            assert (c >= -1e-6).all(), f"Candidate {i} has negative component: {c.tolist()}"
+
+    def test_optimizer_respects_bounds(self, gp_2d):
+        """With restricted bounds, candidates stay within [lower, upper] after projection."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        # Restrict to a subregion of the simplex
+        bounds = torch.tensor([[0.2, 0.2], [0.8, 0.8]], dtype=torch.float64)
+        inits = torch.tensor(
+            [[0.5, 0.5], [0.4, 0.6], [0.6, 0.4], [0.3, 0.7], [0.7, 0.3]],
+            dtype=torch.float64,
+        ).unsqueeze(1)
+
+        candidates, _ = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.1, max_steps=30
+        )
+
+        assert candidates.shape[0] > 0
+        lower, upper = bounds[0], bounds[1]
+        for i in range(candidates.shape[0]):
+            c = candidates[i]
+            assert (c >= lower - 1e-5).all(), f"Candidate {i} below lower: {c.tolist()}"
+            assert (c <= upper + 1e-5).all(), f"Candidate {i} above upper: {c.tolist()}"
+
+    def test_interior_maximum_3d(self, gp_3d):
+        """With acquisition max at 3D center (1/3, 1/3, 1/3), optimizer finds interior."""
+        center = torch.tensor([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=torch.float64)
+        inits = torch.tensor(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.5, 0.5, 0.0],
+                [0.33, 0.33, 0.34],
+                [0.6, 0.2, 0.2],
+            ],
+            dtype=torch.float64,
+        ).unsqueeze(1)
+
+        candidates, values = gp_3d._optimize_acquisition(
+            acq=acq,
+            bounds=bounds,
+            initial_conditions=inits,
+            step_size=0.1,
+            max_steps=50,
+        )
+
+        assert candidates.shape[0] > 0
+        assert candidates.shape[1] == 3
+        best_idx = values.argmax().item()
+        best = candidates[best_idx]
+        dist_to_center = torch.norm(best - center).item()
+        assert dist_to_center < 0.2, (
+            f"Best={best.tolist()}, dist_to_center={dist_to_center:.4f}"
+        )
+        assert abs(best.sum().item() - 1.0) < 0.01
+
+    def test_more_steps_improve_convergence(self, gp_2d):
+        """With interior max, more steps should get closer to center (or at least not worse)."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = torch.tensor(
+            [[0.9, 0.1], [0.1, 0.9], [0.7, 0.3]],
+            dtype=torch.float64,
+        ).unsqueeze(1)
+
+        candidates_short, values_short = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.1, max_steps=10
+        )
+        candidates_long, values_long = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.1, max_steps=60
+        )
+
+        assert candidates_short.shape[0] > 0 and candidates_long.shape[0] > 0
+        best_short = values_short.max().item()
+        best_long = values_long.max().item()
+        # More steps should yield better or equal acquisition value (we're maximizing)
+        assert best_long >= best_short - 1e-6, (
+            f"More steps should not reduce best value: {best_short} vs {best_long}"
+        )
+
+    def test_gradient_ascend_increases_value(self, gp_2d):
+        """Final acquisition value should be >= initial value for each successful restart."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.12, max_steps=40
+        )
+
+        with torch.no_grad():
+            for i in range(candidates.shape[0]):
+                init_val = acq(inits[i].unsqueeze(0)).squeeze().item()
+                final_val = values[i].item()
+                # After ascent, final should be >= initial (allowing small numerical error)
+                assert final_val >= init_val - 1e-5, (
+                    f"Restart {i}: init_val={init_val}, final_val={final_val}"
+                )
+
+    def test_different_inits_converge_to_interior(self, gp_2d):
+        """Multiple boundary inits should all converge toward the same interior max."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, _ = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.15, max_steps=50
+        )
+
+        # All converged points should be within a ball of radius 0.2 around center
+        for i in range(candidates.shape[0]):
+            dist = torch.norm(candidates[i] - center).item()
+            assert dist < 0.25, (
+                f"Restart {i} did not converge to interior: {candidates[i].tolist()}, dist={dist}"
+            )
+
+    def test_flat_acquisition_no_crash(self, gp_2d):
+        """Constant acquisition (flat) should not crash; candidates still on simplex."""
+        class FlatAcquisition(torch.nn.Module):
+            def forward(self, X):
+                if X.dim() == 3:
+                    x = X.squeeze(1)
+                else:
+                    x = X
+                return torch.zeros(x.shape[0], device=x.device, dtype=x.dtype)
+
+        acq = FlatAcquisition()
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.05, max_steps=20
+        )
+
+        # May converge to whatever; just check shape and simplex
+        assert candidates.shape[0] > 0
+        assert values.shape[0] == candidates.shape[0]
+        for i in range(candidates.shape[0]):
+            assert abs(candidates[i].sum().item() - 1.0) < 1e-5
+            assert (candidates[i] >= -1e-6).all()
+
+    def test_single_restart(self, gp_2d):
+        """Single initial condition still returns valid candidate."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = torch.tensor([[0.8, 0.2]], dtype=torch.float64).unsqueeze(1)  # (1, 1, 2)
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.15, max_steps=40
+        )
+
+        assert candidates.shape == (1, 2)
+        assert values.shape == (1,)
+        assert abs(candidates[0].sum().item() - 1.0) < 0.01
+        dist = torch.norm(candidates[0] - center).item()
+        assert dist < 0.2
+
+    def test_values_ordered_with_candidates(self, gp_2d):
+        """values[i] should be the acquisition value at candidates[i]."""
+        center = torch.tensor([0.5, 0.5], dtype=torch.float64)
+        acq = self._make_quadratic_acquisition(center, scale=-1.0)
+        bounds = torch.tensor([[0.0, 0.0], [1.0, 1.0]], dtype=torch.float64)
+        inits = self._inits_2d_boundary_and_interior()
+
+        candidates, values = gp_2d._optimize_acquisition(
+            acq=acq, bounds=bounds, initial_conditions=inits, step_size=0.15, max_steps=30
+        )
+
+        with torch.no_grad():
+            for i in range(candidates.shape[0]):
+                x = candidates[i].unsqueeze(0).unsqueeze(0)  # (1, 1, d)
+                expected = acq(x).squeeze().item()
+                actual = values[i].item()
+                assert abs(expected - actual) < 1e-5, (
+                    f"Candidate {i}: expected acq={expected}, got {actual}"
+                )
+
+
 class TestGPSimplexPenaltyRadius:
     """Tests for penalty radius determination."""
 
@@ -357,7 +702,7 @@ class TestGPSimplexPenaltyRadius:
     def test_determine_penalty_radius(self, gp_fitted):
         """determine_penalty_radius should return positive value."""
         gp, handler = gp_fitted
-        
+
         best_X, _, _ = handler.get_best_unpenalized()
 
         radius = gp.determine_penalty_radius(
@@ -374,7 +719,7 @@ class TestGPSimplexPenaltyRadius:
     def test_penalty_radius_respects_max(self, gp_fitted):
         """Penalty radius should not exceed max_radius."""
         gp, handler = gp_fitted
-        
+
         best_X, _, _ = handler.get_best_unpenalized()
 
         radius = gp.determine_penalty_radius(
@@ -476,7 +821,7 @@ class TestGPSimplexIntegration:
 
         # Refit with new data
         gp.fit_from_data_handler()
-        
+
         # Get another candidate
         candidate2 = gp.get_candidate(bounds)
         assert candidate2 is not None

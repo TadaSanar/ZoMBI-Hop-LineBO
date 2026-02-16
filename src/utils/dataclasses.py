@@ -33,6 +33,7 @@ class ZoMBIHopConfig:
     convergence_pi_threshold: float = 0.01
     input_noise_threshold_mult: float = 2.0
     output_noise_threshold_mult: float = 2.0
+    n_consecutive_converged: int = 2  # Require this many consecutive converged iterations before declaring needle
 
     # GP parameters
     max_gp_points: int = 3000
@@ -82,6 +83,7 @@ class ZoMBIHopConfig:
         assert 0 <= self.convergence_pi_threshold <= 1, "convergence_pi_threshold must be in [0, 1]"
         assert self.input_noise_threshold_mult > 0, "input_noise_threshold_mult must be positive"
         assert self.output_noise_threshold_mult > 0, "output_noise_threshold_mult must be positive"
+        assert self.n_consecutive_converged >= 1, "n_consecutive_converged must be >= 1"
         assert self.max_gp_points > 0, "max_gp_points must be positive"
         # repulsion_lambda can be None (auto-computed) or positive
         assert self.repulsion_lambda is None or self.repulsion_lambda > 0, "repulsion_lambda must be None or positive"
@@ -109,9 +111,10 @@ class Checkpoint:
     convergence_pi_threshold: float
     input_noise_threshold_mult: float
     output_noise_threshold_mult: float
-    max_gp_points: int
-    device: str
-    dtype: str
+    n_consecutive_converged: int = 2
+    max_gp_points: int = 3000
+    device: str = 'cuda'
+    dtype: str = 'float64'
     timestamp: Optional[str] = None
     version: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
