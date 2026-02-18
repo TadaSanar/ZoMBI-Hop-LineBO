@@ -25,7 +25,8 @@ if torch.cuda.is_available():
     torch.cuda.set_per_process_memory_fraction(0.95)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_device("cuda")
+    torch.set_default_dtype(torch.float32)
 
 
 class ZoMBIHop:

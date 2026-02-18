@@ -10,10 +10,10 @@ import torch
 import torch.nn as nn
 from botorch.models import SingleTaskGP
 from botorch.fit import fit_gpytorch_mll
-from botorch.acquisition import LogExpectedImprovement
+from botorch.acquisition import LogExpectedImprovement, UpperConfidenceBound
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch.autograd import grad
-from typing import Optional, Tuple, Callable, List
+from typing import Literal, Optional, Tuple, Callable, List
 
 from .simplex import proj_simplex, random_simplex, random_zero_sum_directions
 from .datahandler import DataHandler
@@ -130,6 +130,12 @@ class GPSimplex:
         Lambda for repulsive acquisition. If None, auto-computed dynamically
         as 10 * median(|acquisition_values|) when creating acquisition function.
         Default: None (auto).
+    acquisition_type : str
+        Base acquisition: "ucb" (Upper Confidence Bound) or "ei" (Expected Improvement).
+        Both are wrapped with needle repulsion. Default: "ucb".
+    ucb_beta : float
+        Exploration weight for UCB (mean + beta * std). Only used when acquisition_type=="ucb".
+        Default: 0.1.
     device : str
         Torch device.
     dtype : torch.dtype
@@ -144,6 +150,8 @@ class GPSimplex:
         num_restarts: int = 30,
         raw_samples: int = 500,
         repulsion_lambda: Optional[float] = None,
+        acquisition_type: Literal["ucb", "ei"] = "ucb",
+        ucb_beta: float = 0.1,
         device: str = 'cuda',
         dtype: torch.dtype = torch.float64,
     ):
@@ -153,6 +161,10 @@ class GPSimplex:
         self.num_restarts = num_restarts
         self.raw_samples = raw_samples
         self.repulsion_lambda = repulsion_lambda  # None means auto-compute
+        self.acquisition_type = acquisition_type.lower()
+        if self.acquisition_type not in ("ucb", "ei"):
+            raise ValueError(f"acquisition_type must be 'ucb' or 'ei', got {acquisition_type!r}")
+        self.ucb_beta = ucb_beta
         self.device = torch.device(device)
         self.dtype = dtype
 
@@ -257,10 +269,17 @@ class GPSimplex:
         if self.gp is None:
             return float('-inf')
         x_3d = x.unsqueeze(0).unsqueeze(0) if x.dim() == 1 else x.reshape(1, 1, -1)
-        base_acq = LogExpectedImprovement(self.gp, best_f=best_f)
-        with torch.no_grad():
-            val = base_acq(x_3d).squeeze().item()
-        return val
+        if self.acquisition_type == "ei":
+            base_acq = LogExpectedImprovement(self.gp, best_f=best_f)
+            with torch.no_grad():
+                val = base_acq(x_3d).squeeze().item()
+            return val
+        else:
+            # UCB: return acquisition value at point for logging (not log EI)
+            base_acq = UpperConfidenceBound(self.gp, beta=self.ucb_beta)
+            with torch.no_grad():
+                val = base_acq(x_3d).squeeze().item()
+            return val
 
     def create_acquisition(
         self,
@@ -268,28 +287,30 @@ class GPSimplex:
         penalty_value: Optional[float] = None,
     ) -> nn.Module:
         """
-        Create acquisition function.
+        Create acquisition function (base + repulsion).
 
         Parameters
         ----------
         best_f : float, optional
-            Best function value so far. If None, computed from data.
+            Best function value so far. Used only for EI. If None, computed from data.
         penalty_value : float, optional
             Unused, kept for API compatibility.
 
         Returns
         -------
         nn.Module
-            Acquisition function.
+            Acquisition function (UCB or EI, wrapped with needle repulsion).
         """
         if self.gp is None:
             raise RuntimeError("GP not fitted. Call fit() first.")
 
-        if best_f is None:
-            _, Y = self.data_handler.get_gp_data()
-            best_f = Y.max().item()
-
-        base_acq = LogExpectedImprovement(self.gp, best_f=best_f)
+        if self.acquisition_type == "ucb":
+            base_acq = UpperConfidenceBound(self.gp, beta=self.ucb_beta)
+        else:
+            if best_f is None:
+                _, Y = self.data_handler.get_gp_data()
+                best_f = Y.max().item()
+            base_acq = LogExpectedImprovement(self.gp, best_f=best_f)
 
         # Auto-compute repulsion_lambda if not provided
         if self.repulsion_lambda is None:

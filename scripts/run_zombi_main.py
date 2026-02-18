@@ -7,17 +7,28 @@ This module contains the DB-backed objective + runner that used to live in
 
 from __future__ import annotations
 
+import csv
+import json
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Dict, List, Tuple
+
 
 import numpy as np
 import torch
 
-from src import ZoMBIHop
+from src import ZoMBIHop, LineBO
 from src.core.linebo import batch_line_simplex_segments, line_simplex_segment, zero_sum_dirs
 
 from scripts import communication
+
+try:
+    import matplotlib
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
+    _HAS_MPL = True
+except Exception:
+    _HAS_MPL = False
 
 # # Default Configuration
 # DEFAULT_DIMENSIONS = 10
@@ -29,6 +40,106 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Database interfacing settings
 OPTIMIZING_DIMS = [0, 8, 9]
+
+
+# --- Live plotting and iteration logging ---
+def setup_live_plots() -> Tuple[Dict[str, Any], List[float], List[float], List[np.ndarray], Dict[str, Any]]:
+    """Return (fig_ref, all_sample_num, all_y, all_x_actual, last_call_ref). No window yet; plots are created on first update and then closed/recreated each time."""
+    if not _HAS_MPL:
+        return {}, [], [], [], {}
+    fig_ref: Dict[str, Any] = {}  # will hold 'fig' so we can close it before recreating
+    return fig_ref, [], [], [], {}
+
+
+def update_live_plots(
+    fig_ref: Dict[str, Any],
+    all_sample_num: List[float],
+    all_y: List[float],
+    all_x_actual: List[np.ndarray],
+    new_x_actual: np.ndarray,
+    new_y: np.ndarray,
+    needle_plot_points: List[Dict[str, float]] | None = None,
+) -> None:
+    """Append new points, close previous plot window, create a new figure with full state, show it (non-blocking). Plots are not kept active."""
+    if not _HAS_MPL:
+        return
+    new_x = np.atleast_2d(new_x_actual)
+    new_y_flat = np.atleast_1d(new_y).ravel()
+    n_new = len(new_y_flat)
+    for i in range(n_new):
+        all_sample_num.append(len(all_sample_num) + 1)
+        all_y.append(float(new_y_flat[i]))
+        all_x_actual.append(new_x[i] if new_x.shape[0] > i else new_x[0])
+    if not all_x_actual:
+        return
+    # Close previous figure so we don't keep active windows
+    prev_fig = fig_ref.get("fig")
+    if prev_fig is not None:
+        try:
+            plt.close(prev_fig)
+        except Exception:
+            pass
+        fig_ref["fig"] = None
+    X = np.array(all_x_actual)
+    center = np.mean(X, axis=0)
+    # center = np.ones((len(OPTIMIZING_DIMS),)) * 1.0 / len(OPTIMIZING_DIMS)
+    distances = np.linalg.norm(X - center, axis=1)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle("ZoMBI-Hop live")
+    ax1.set_xlabel("Sample number")
+    ax1.set_ylabel("Objective value")
+    ax1.set_title("Objective value vs sample number")
+    ax1.plot(all_sample_num, all_y, "b.-", markersize=4)
+    ax2.set_xlabel("Distance from center of mass")
+    ax2.set_ylabel("Objective value")
+    ax2.set_title("Objective value vs distance from center")
+    n_pts = len(all_y)
+    iteration_order = np.arange(n_pts)
+    scatter_ax2 = ax2.scatter(
+        distances, all_y, c=iteration_order, ec="k", lw=0.3, cmap="viridis", s=8, alpha=1, vmin=0, vmax=max(n_pts - 1, 1)
+    )
+    fig.colorbar(scatter_ax2, ax=ax2, label="Iteration (dark=oldest, yellow=newest)")
+    if needle_plot_points:
+        for n in needle_plot_points:
+            ax1.scatter(n["sample_idx"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
+            ax2.scatter(n["distance"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
+    fig_ref["fig"] = fig
+    plt.show(block=False)
+    plt.pause(0.001)  # allow GUI to update
+
+
+def log_iteration(
+    candidate: torch.Tensor,
+    endpoints_top2: Dict[str, Any],
+    x_expected: torch.Tensor,
+    x_actual: torch.Tensor,
+    y: torch.Tensor,
+) -> None:
+    """Log candidate, best two endpoints from LineBO, and resultant expected, actual, y to terminal."""
+    print("\n" + "=" * 60)
+    print("[ITERATION LOG]")
+    print("  candidate (x_tell):", candidate.cpu().numpy().tolist())
+    if endpoints_top2:
+        print("  best two endpoints (LineBO):")
+        print("    line_0 left :", endpoints_top2.get("line_0_left", np.array([])).tolist())
+        print("    line_0 right:", endpoints_top2.get("line_0_right", np.array([])).tolist())
+        print("    line_1 left :", endpoints_top2.get("line_1_left", np.array([])).tolist())
+        print("    line_1 right:", endpoints_top2.get("line_1_right", np.array([])).tolist())
+    print("  expected (LineBO x_requested):")
+    x_exp = x_expected.cpu().numpy()
+    for i in range(min(3, len(x_exp))):
+        print("   ", x_exp[i].tolist())
+    if len(x_exp) > 3:
+        print("    ... (%d points)" % len(x_exp))
+    print("  actual (x_actual):")
+    x_act = x_actual.cpu().numpy()
+    for i in range(min(3, len(x_act))):
+        print("   ", x_act[i].tolist())
+    if len(x_act) > 3:
+        print("    ... (%d points)" % len(x_act))
+    y_flat = y.cpu().numpy().ravel()
+    print("  y (objective values):", y_flat.tolist() if len(y_flat) <= 12 else y_flat[:6].tolist() + ["..."] + y_flat[-6:].tolist())
+    print("=" * 60 + "\n")
 
 
 def normalize_last_axis(arr: np.ndarray) -> np.ndarray:
@@ -50,6 +161,15 @@ def get_y_measurements(
     verbose: bool = False,
     ready_for_objectives: bool = False,
 ):
+    """
+    Read objective values (and compositions → x_meas) from the objective DB.
+
+    Handshake (when ready_for_objectives=True):
+    - Receiver sets handshake.new_objective_available = 1 when it writes a new objective row.
+    - We wait until flag == 1, then read the objective table, then set flag = 0 (consumed).
+    - This avoids reading stale data. On resume, reset_objective() clears the table and
+      sets flag = 0 so the first read waits for fresh data from the apparatus.
+    """
     import os as _os
     import sqlite3
     import time as _time
@@ -163,183 +283,150 @@ def _pad_to_10d(arr):
     return out
 
 
-def objective_function_init(ordered_endpoints, num_experiments: int = NUM_EXPERIMENTS):
+def expected_from_actual(x_actual: torch.Tensor) -> torch.Tensor:
     """
-    Evaluate each initial line separately: one write_compositions + get_y_measurements per line,
-    then concatenate (x_meas, y) so the apparatus receives one line at a time.
-    Real line = current line being measured; cache line = the other initial line (different from real).
+    Compute expected (requested) points from actual points the same way LineBO does:
+    points evenly spaced along the first principal direction of x_actual.
     """
-    num_lines = len(ordered_endpoints)
-    x_meas_list = []
-    y_list = []
-    for line_idx in range(num_lines):
-        # Real line: current line
-        left = ordered_endpoints[line_idx][0]
-        right = ordered_endpoints[line_idx][1]
-        x = np.array([left + t * (right - left) for t in np.linspace(0, 1, num_experiments)])
-        left_norm = _pad_to_10d(normalize_last_axis(np.round(left, 3)))[0]
-        right_norm = _pad_to_10d(normalize_last_axis(np.round(right, 3)))[0]
-        x_norm = _pad_to_10d(normalize_last_axis(np.round(x, 3)))
-        # Cache line: other initial line (so real and cache differ)
-        cache_idx = (line_idx + 1) % num_lines
-        left_cache = ordered_endpoints[cache_idx][0]
-        right_cache = ordered_endpoints[cache_idx][1]
-        x_cache = np.array([left_cache + t * (right_cache - left_cache) for t in np.linspace(0, 1, num_experiments)])
-        left_cache_norm = _pad_to_10d(normalize_last_axis(np.round(left_cache, 3)))[0]
-        right_cache_norm = _pad_to_10d(normalize_last_axis(np.round(right_cache, 3)))[0]
-        x_cache_norm = _pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
-        communication.write_compositions(
-            start=left_norm,
-            end=right_norm,
-            array=x_norm,
-            start_cache=left_cache_norm,
-            end_cache=right_cache_norm,
-            array_cache=x_cache_norm,
-            timestamp=time.time(),
+    if x_actual.shape[0] > 1:
+        x_centered = x_actual - x_actual.mean(dim=0, keepdim=True)
+        U, S, V = torch.linalg.svd(x_centered, full_matrices=False)
+        direction = V[0]  # (d,) first right singular vector
+        projections = torch.matmul(x_centered, direction.unsqueeze(1)).squeeze(1)
+        t_vals = torch.linspace(
+            projections.min().item(),
+            projections.max().item(),
+            x_actual.shape[0],
+            device=x_actual.device,
+            dtype=x_actual.dtype,
         )
-        y, x_meas = get_y_measurements(x, verbose=True, ready_for_objectives=False)
-        x_meas_list.append(x_meas)
-        y_list.append(-np.asarray(y).ravel())
-    x_meas = np.vstack(x_meas_list)
-    y = np.concatenate(y_list)
-    return x_meas, y
+        x_requested = x_actual.mean(dim=0, keepdim=True) + t_vals.unsqueeze(1) * direction.unsqueeze(0)
+    else:
+        x_requested = x_actual.clone()
+    return x_requested
 
 
-def objective_function(ordered_endpoints, num_experiments: int = NUM_EXPERIMENTS):
-    best_start = ordered_endpoints[0][0]
-    best_end = ordered_endpoints[0][1]
-    cache_start = ordered_endpoints[1][0]
-    cache_end = ordered_endpoints[1][1]
+def objective(
+    endpoints: torch.Tensor,
+    ready_for_objectives: bool = True,
+    endpoints_log_ref: Dict[str, Any] | None = None,
+    num_experiments: int = NUM_EXPERIMENTS,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Single objective: accepts (n, 2, d) torch tensor with n >= 2.
+    Sends first two lines endpoints[0] and endpoints[1] (each 2,d = left, right) to communication,
+    waits on response, returns (x_actual, y) for the first line as tensors.
+    Logs the endpoints passed in to endpoints_log_ref when provided.
+    """
+    print(
+        "[objective] called with params:\n"
+        f"  endpoints.shape={getattr(endpoints, 'shape', None)}, dtype={getattr(endpoints, 'dtype', None)}, device={getattr(endpoints, 'device', None)}\n"
+        f"  ready_for_objectives={ready_for_objectives}\n"
+        f"  endpoints_log_ref keys={list(endpoints_log_ref.keys()) if endpoints_log_ref is not None else None}\n"
+        f"  num_experiments={num_experiments}"
+    )
+    assert endpoints.dim() == 3 and endpoints.shape[0] >= 2 and endpoints.shape[1] == 2
+    device = endpoints.device
+    dtype = endpoints.dtype
+    line0 = endpoints[0]  # (2, d) left, right
+    line1 = endpoints[1]  # (2, d) left, right
+    line_0_left = line0[0].cpu().numpy()
+    line_0_right = line0[1].cpu().numpy()
+    line_1_left = line1[0].cpu().numpy()
+    line_1_right = line1[1].cpu().numpy()
 
-    x = np.array([best_start + t * (best_end - best_start) for t in np.linspace(0, 1, num_experiments)])
-    x_cache = np.array([cache_start + t * (cache_end - cache_start) for t in np.linspace(0, 1, num_experiments)])
+    if endpoints_log_ref is not None:
+        endpoints_log_ref["line_0_left"] = line_0_left
+        endpoints_log_ref["line_0_right"] = line_0_right
+        endpoints_log_ref["line_1_left"] = line_1_left
+        endpoints_log_ref["line_1_right"] = line_1_right
 
-    best_start_norm = _pad_to_10d(normalize_last_axis(np.round(best_start, 3)))[0]
-    best_end_norm = _pad_to_10d(normalize_last_axis(np.round(best_end, 3)))[0]
-    cache_start_norm = _pad_to_10d(normalize_last_axis(np.round(cache_start, 3)))[0]
-    cache_end_norm = _pad_to_10d(normalize_last_axis(np.round(cache_end, 3)))[0]
-
-    x_norm = _pad_to_10d(normalize_last_axis(np.round(x, 3)))
+    x_main = np.array([line_0_left + t * (line_0_right - line_0_left) for t in np.linspace(0, 1, num_experiments)])
+    x_cache = np.array([line_1_left + t * (line_1_right - line_1_left) for t in np.linspace(0, 1, num_experiments)])
+    left_norm = _pad_to_10d(normalize_last_axis(np.round(line_0_left, 3)))[0]
+    right_norm = _pad_to_10d(normalize_last_axis(np.round(line_0_right, 3)))[0]
+    x_main_norm = _pad_to_10d(normalize_last_axis(np.round(x_main, 3)))
+    cache_left_norm = _pad_to_10d(normalize_last_axis(np.round(line_1_left, 3)))[0]
+    cache_right_norm = _pad_to_10d(normalize_last_axis(np.round(line_1_right, 3)))[0]
     x_cache_norm = _pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
 
     communication.write_compositions(
-        start=best_start_norm,
-        end=best_end_norm,
-        array=x_norm,
-        start_cache=cache_start_norm,
-        end_cache=cache_end_norm,
+        start=left_norm,
+        end=right_norm,
+        array=x_main_norm,
+        start_cache=cache_left_norm,
+        end_cache=cache_right_norm,
         array_cache=x_cache_norm,
         timestamp=time.time(),
     )
+    # When waiting for apparatus: clear objective DB and handshake *after* sending compositions
+    # so we only accept data that arrives in response to this request (avoids re-reading stale data on resume).
+    if ready_for_objectives:
+        communication.reset_objective()
+    y_all, x_meas_all = get_y_measurements(
+        np.vstack([x_main, x_cache]), verbose=True, ready_for_objectives=ready_for_objectives
+    )
+    x_meas_main = x_meas_all[:num_experiments].astype(np.float64)
+    y_main = np.asarray(y_all[:num_experiments]).ravel().astype(np.float64)
+    return (
+        torch.tensor(x_meas_main, device=device, dtype=dtype),
+        torch.tensor(y_main, device=device, dtype=dtype),
+    )
 
-    y, x_meas = get_y_measurements(x, verbose=True, ready_for_objectives=True)
-    return x_meas, -y.ravel()
 
-
-def objective_function_dry(ordered_endpoints, num_experiments: int = NUM_EXPERIMENTS):
+def linebo_sampler_wrapper(
+    dimensions: int,
+    num_lines: int = 10,
+    device: str = "cuda",
+    dtype: torch.dtype = torch.float64,
+    resume_plot_data: Tuple[List[float], List[float], List[np.ndarray]] | None = None,
+    needle_plot_points: List[Dict[str, float]] | None = None,
+):
     """
-    Same as objective_function but NO communication: compute compositions that WOULD
-    be sent, print everything, return synthetic (x_meas, y) so the optimizer can continue.
+    Wrapper for LineBO.sampler: calls linebo.sampler, then logs expected, actual, y
+    and makes them available to all logging (live plots + log_iteration).
+    If resume_plot_data is provided (e.g. when resuming a job), prefill plot lists and redraw.
+    needle_plot_points: mutable list of {sample_idx, y, distance} for needle stars on the plot.
     """
-    best_start = ordered_endpoints[0][0]
-    best_end = ordered_endpoints[0][1]
-    cache_start = ordered_endpoints[1][0]
-    cache_end = ordered_endpoints[1][1]
-
-    x = np.array([best_start + t * (best_end - best_start) for t in np.linspace(0, 1, num_experiments)])
-    x_cache = np.array([cache_start + t * (cache_end - cache_start) for t in np.linspace(0, 1, num_experiments)])
-
-    best_start_norm = _pad_to_10d(normalize_last_axis(np.round(best_start, 3)))[0]
-    best_end_norm = _pad_to_10d(normalize_last_axis(np.round(best_end, 3)))[0]
-    cache_start_norm = _pad_to_10d(normalize_last_axis(np.round(cache_start, 3)))[0]
-    cache_end_norm = _pad_to_10d(normalize_last_axis(np.round(cache_end, 3)))[0]
-
-    x_norm = _pad_to_10d(normalize_last_axis(np.round(x, 3)))
-    x_cache_norm = _pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
-
-    # ---- PRINT EVERYTHING (no communication) ----
-    print("\n" + "=" * 80)
-    print("[DRY RUN] WOULD SEND TO APPARATUS (not sending)")
-    print("=" * 80)
-    print("[DRY RUN] Line 0 (best): left  =", best_start, "  right =", best_end)
-    print("[DRY RUN] Line 1 (cache): left =", cache_start, "  right =", cache_end)
-    print("[DRY RUN] Line 0 (best)  normalized 10d:", best_start_norm, "->", best_end_norm)
-    print("[DRY RUN] Line 1 (cache) normalized 10d:", cache_start_norm, "->", cache_end_norm)
-    print("[DRY RUN] Compositions along line 0 (first 5):")
-    for i in range(min(5, len(x_norm))):
-        print(f"  [{i}] {x_norm[i]}")
-    if len(x_norm) > 5:
-        print(f"  ... ({len(x_norm)} total)")
-    print("[DRY RUN] Compositions along line 1 (first 5):")
-    for i in range(min(5, len(x_cache_norm))):
-        print(f"  [{i}] {x_cache_norm[i]}")
-    if len(x_cache_norm) > 5:
-        print(f"  ... ({len(x_cache_norm)} total)")
-    print("[DRY RUN] OPTIMIZING_DIMS =", OPTIMIZING_DIMS)
-    x_meas_0 = x_norm[:, OPTIMIZING_DIMS]
-    x_meas_1 = x_cache_norm[:, OPTIMIZING_DIMS]
-    x_meas = np.vstack([x_meas_0, x_meas_1]).astype(np.float64)
-    print("[DRY RUN] Expected x_meas shape:", x_meas.shape, "(points × OPTIMIZING_DIMS)")
-    # Synthetic Y (negative for minimization; random so optimizer keeps going)
-    y_fake = -np.random.uniform(0.5, 2.0, size=x_meas.shape[0]).astype(np.float64)
-    print("[DRY RUN] Synthetic Y (fake objectives, negated for min):", y_fake[:8], "...")
-    print("=" * 80 + "\n")
-
-    return x_meas, y_fake
-
-
-def create_db_objective_wrapper(objective_fn, dimensions: int, num_lines: int = 100, device="cuda", dry_run: bool = False):
-    """Bridge ZoMBIHop objective interface to DB-backed line objective."""
+    if needle_plot_points is None:
+        needle_plot_points = []
+    endpoints_log_ref: Dict[str, Any] = {}
+    linebo = LineBO(
+        lambda ep: objective(ep, ready_for_objectives=True, endpoints_log_ref=endpoints_log_ref),
+        dimensions,
+        num_points_per_line=100,
+        num_lines=num_lines,
+        device=str(device),
+    )
+    fig_ref, all_sample_num, all_y, all_x_actual, _ = setup_live_plots()
+    if resume_plot_data is not None:
+        sample_nums, y_vals, x_actuals = resume_plot_data
+        all_sample_num.extend(sample_nums)
+        all_y.extend(y_vals)
+        all_x_actual.extend(x_actuals)
+        # Show once with loaded history (and needles if any)
+        if _HAS_MPL and all_y:
+            update_live_plots(
+                fig_ref, all_sample_num, all_y, all_x_actual,
+                np.zeros((0, dimensions)), np.array([]),
+                needle_plot_points=needle_plot_points,
+            )
 
     def wrapper(
         x_tell: torch.Tensor,
         bounds: torch.Tensor | None = None,
         acquisition_function=None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        max_tries = 20  # resample directions until we get ≥2 non-degenerate segments (e.g. when at vertex)
-        for _ in range(max_tries):
-            directions = zero_sum_dirs(num_lines, dimensions, device=device, dtype=torch.float64)
-            x_left, x_right, t_min, t_max, mask = batch_line_simplex_segments(x_tell, directions)
-            if x_left is not None and x_left.shape[0] >= 2:
-                break
-        else:
-            # Still < 2 valid lines (e.g. x_tell at vertex); try a smaller batch
-            fallback_dirs = zero_sum_dirs(max(2, num_lines), dimensions, device=device, dtype=torch.float64)
-            x_left, x_right, t_min, t_max, mask = batch_line_simplex_segments(x_tell, fallback_dirs)
-            if x_left is None or x_left.shape[0] < 2:
-                print("⚠️ Warning: Not enough non-degenerate lines (e.g. at vertex), using single-point fallback")
-                x_left = x_tell.unsqueeze(0).repeat(2, 1)
-                x_right = x_tell.unsqueeze(0).repeat(2, 1)
-
-        x_left = x_left[:2]
-        x_right = x_right[:2]
-        if x_left.shape[0] < 2:
-            x_left = torch.cat([x_left, x_left], dim=0)
-            x_right = torch.cat([x_right, x_right], dim=0)
-
-        ordered_endpoints = np.stack([x_left.cpu().numpy(), x_right.cpu().numpy()], axis=1)
-
-        if dry_run:
-            print("\n" + "=" * 80)
-            print("[DRY RUN] LineBO step (up to communication)")
-            print("=" * 80)
-            print("[DRY RUN] x_tell (current best point, d-dim):", x_tell.cpu().numpy())
-            print("[DRY RUN] num_lines sampled:", num_lines, "| dimensions:", dimensions)
-            print("[DRY RUN] First 3 zero-sum directions:\n", directions[:3].cpu().numpy())
-            print("[DRY RUN] t_min, t_max (line segment params):", t_min[:2].cpu().numpy(), t_max[:2].cpu().numpy())
-            print("[DRY RUN] Line 0 left  (boundary):", x_left[0].cpu().numpy())
-            print("[DRY RUN] Line 0 right (boundary):", x_right[0].cpu().numpy())
-            print("[DRY RUN] Line 1 left  (boundary):", x_left[1].cpu().numpy())
-            print("[DRY RUN] Line 1 right (boundary):", x_right[1].cpu().numpy())
-            print("[DRY RUN] ordered_endpoints shape:", ordered_endpoints.shape)
-            print("=" * 80)
-
-        x_meas, y = objective_fn(ordered_endpoints)
-
-        X_actual = torch.tensor(x_meas, device=device, dtype=torch.float64)
-        X_expected = X_actual.clone()
-        Y = torch.tensor(y, device=device, dtype=torch.float64).reshape(-1)
-        return X_actual, X_expected, Y
+        x_requested, x_actual, y = linebo.sampler(x_tell, bounds, acquisition_function)
+        y_flat = y.reshape(-1)
+        x_act_np = x_actual.cpu().numpy()
+        y_np = y_flat.cpu().numpy()
+        update_live_plots(
+            fig_ref, all_sample_num, all_y, all_x_actual, x_act_np, y_np,
+            needle_plot_points=needle_plot_points,
+        )
+        log_iteration(x_tell, endpoints_log_ref, x_requested, x_actual, y_flat)
+        return x_requested, x_actual, y_flat
 
     return wrapper
 
@@ -402,12 +489,83 @@ def _load_bounds_from_run(run_dir: Path, device: torch.device, dtype: torch.dtyp
     return tensors["bounds"].to(device=device, dtype=dtype)
 
 
-def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
-    """Run DB-driven ZoMBI-Hop loop (new or resume). If dry_run=True, no apparatus communication; synthetic Y only."""
-    if dry_run and resume_uuid is None:
-        raise ValueError("dry_run requires resume_uuid (resume a run without talking to apparatus).")
-    if resume_uuid is None:
-        communication.reset_objective()
+def _load_plot_data_from_run(run_dir: Path) -> Tuple[List[float], List[float], List[np.ndarray]] | None:
+    """Load latest all_points (sample numbers, y values, x_actual) from resumed run for live plots. Returns None if missing."""
+    current_state_file = run_dir / "current_state.txt"
+    if not current_state_file.exists():
+        return None
+    label = current_state_file.read_text().strip()
+    state_dir = run_dir / "states" / label
+    csv_path = state_dir / "all_points.csv"
+    if not csv_path.exists():
+        return None
+    all_sample_num: List[float] = []
+    all_y: List[float] = []
+    all_x_actual: List[np.ndarray] = []
+    try:
+        with open(csv_path, newline="") as f:
+            reader = csv.DictReader(f)
+            if not reader.fieldnames:
+                return None
+            x_cols = sorted([c for c in reader.fieldnames if c.startswith("x_actual_") and c[len("x_actual_"):].isdigit()], key=lambda c: int(c.split("_")[-1]))
+            for row in reader:
+                try:
+                    y_val = float(row["y_value"])
+                    x_vals = [float(row[c]) for c in x_cols]
+                except (KeyError, ValueError):
+                    continue
+                all_sample_num.append(len(all_sample_num) + 1)
+                all_y.append(y_val)
+                all_x_actual.append(np.array(x_vals))
+    except Exception:
+        return None
+    if not all_y:
+        return None
+    return (all_sample_num, all_y, all_x_actual)
+
+
+def _load_needles_for_plot(
+    run_dir: Path,
+    all_x_actual: List[np.ndarray],
+) -> List[Dict[str, float]]:
+    """Load needle positions for live plot stars from resumed run (same state as all_points). Returns list of {sample_idx, y, distance}."""
+    out: List[Dict[str, float]] = []
+    if not all_x_actual:
+        return out
+    current_state_file = run_dir / "current_state.txt"
+    if not current_state_file.exists():
+        return out
+    label = current_state_file.read_text().strip()
+    state_dir = run_dir / "states" / label
+    needles_path = state_dir / "needles_results.json"
+    if not needles_path.exists():
+        return out
+    try:
+        with open(needles_path) as f:
+            needles_data = json.load(f)
+    except Exception:
+        return out
+    X = np.array(all_x_actual)
+    center = np.mean(X, axis=0)
+    for rec in needles_data:
+        try:
+            pt = np.array(rec["point"], dtype=float)
+            y_val = float(rec["value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        # Closest point index in all_x_actual (1-based sample number)
+        dists = np.linalg.norm(X - pt, axis=1)
+        idx = int(np.argmin(dists))
+        sample_idx = idx + 1
+        distance = float(np.linalg.norm(pt - center))
+        out.append({"sample_idx": sample_idx, "y": y_val, "distance": distance})
+    return out
+
+
+def run_zombi_main(resume_uuid: str | None = None):
+    """Run DB-driven ZoMBI-Hop loop (new or resume)."""
+    # Clear objective DB and handshake so the first read waits for fresh data (new run or resume).
+    communication.reset_objective()
 
     dimensions = len(OPTIMIZING_DIMS)
     device = torch.device(DEVICE)
@@ -421,17 +579,26 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
     checkpoint_dir = base_dir / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
 
-    if dry_run:
-        print("\n" + "=" * 80)
-        print("[DRY RUN] No communication with apparatus. Will print suggested endpoints/compositions and use synthetic Y.")
-        print("=" * 80 + "\n")
+    resume_plot_data: Tuple[List[float], List[float], List[np.ndarray]] | None = None
+    needle_plot_points: List[Dict[str, float]] = []
+    if resume_uuid is not None:
+        run_dir = checkpoint_dir / f"run_{resume_uuid}"
+        if run_dir.exists():
+            resume_plot_data = _load_plot_data_from_run(run_dir)
+            if resume_plot_data is not None:
+                print(f"[Resume] Loaded {len(resume_plot_data[1])} points into live plot.")
+                resume_needles = _load_needles_for_plot(run_dir, resume_plot_data[2])
+                needle_plot_points.extend(resume_needles)
+                if resume_needles:
+                    print(f"[Resume] Loaded {len(resume_needles)} needle(s) for plot stars.")
 
-    objective_wrapper = create_db_objective_wrapper(
-        objective_function_dry if dry_run else objective_function,
+    objective_wrapper = linebo_sampler_wrapper(
         dimensions=dimensions,
-        num_lines=100,
+        num_lines=10,
         device=device,
-        dry_run=dry_run,
+        dtype=dtype,
+        resume_plot_data=resume_plot_data,
+        needle_plot_points=needle_plot_points,
     )
 
     if resume_uuid is None:
@@ -444,13 +611,36 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
 
         print("Generating initial data via database...")
         ordered_endpoints = initial_lines_on_boundary(
-            NUM_INIT_DATA, bounds, device, dtype=torch.float64
+            2 * NUM_INIT_DATA, bounds, device, dtype=torch.float64
         )
-
-        x_meas, y = objective_function_init(ordered_endpoints, num_experiments=NUM_EXPERIMENTS)
-        X_init_actual = torch.tensor(x_meas, device=device, dtype=torch.float64)
-        X_init_expected = X_init_actual.clone()
-        Y_init = torch.tensor(y, device=device, dtype=torch.float64).reshape(-1, 1)
+        n_total = len(ordered_endpoints)
+        x_actual_list: List[torch.Tensor] = []
+        x_expected_list: List[torch.Tensor] = []
+        y_list: List[torch.Tensor] = []
+        for i in range(NUM_INIT_DATA):
+            idx0 = 2 * i
+            idx1 = 2 * i + 1
+            line0 = ordered_endpoints[idx0]  # (2, d) left, right
+            line1 = ordered_endpoints[idx1]
+            # Ensure main and cache are different (avoid same values in cache and real)
+            if np.allclose(line0, line1, rtol=1e-6, atol=1e-8):
+                idx1 = (2 * i + 2) % n_total
+                if idx1 == idx0:
+                    idx1 = (idx0 + 1) % n_total
+                line1 = ordered_endpoints[idx1]
+            ep = torch.tensor(
+                np.stack([line0, line1], axis=0),
+                device=device,
+                dtype=torch.float64,
+            )
+            x_act, y_act = objective(ep, ready_for_objectives=False)
+            x_exp = expected_from_actual(x_act)
+            x_actual_list.append(x_act)
+            x_expected_list.append(x_exp)
+            y_list.append(y_act)
+        X_init_actual = torch.cat(x_actual_list, dim=0)
+        X_init_expected = torch.cat(x_expected_list, dim=0)
+        Y_init = torch.cat(y_list, dim=0).reshape(-1, 1)
 
         optimizer = ZoMBIHop(
             objective=objective_wrapper,
@@ -458,23 +648,29 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
             X_init_actual=X_init_actual,
             X_init_expected=X_init_expected,
             Y_init=Y_init,
-            penalization_threshold=0.0005915,
-            convergence_pi_threshold=0.01,
-            input_noise_threshold_mult=2.0,
-            output_noise_threshold_mult=2.0,
-            max_zooms=5,
-            max_iterations=7,
+            max_zooms=3,
+            max_iterations=4,
             top_m_points=max(dimensions + 1, 4),
             n_restarts=50,
             raw=500,
+            penalization_threshold=6.5e-5,
             penalty_num_directions=10 * dimensions,
             penalty_max_radius=0.33633,
             penalty_radius_step=None,
+            convergence_pi_threshold=4.8e-5,
+            input_noise_threshold_mult=2.0,
+            output_noise_threshold_mult=0.5,
+            n_consecutive_converged=5,
             max_gp_points=3000,
-            device=device,
+            acquisition_type="ucb",
+            ucb_beta=0.1,
+            device=str(device),
             dtype=dtype,
+            run_uuid=None,
             checkpoint_dir=str(checkpoint_dir),
+            max_checkpoints=50,
             verbose=True,
+            needle_plot_points_ref=needle_plot_points,
         )
 
         print(f"✅ Starting new trial with UUID: {optimizer.run_uuid}")
@@ -490,11 +686,15 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
             X_init_actual=None,
             X_init_expected=None,
             Y_init=None,
-            run_uuid=resume_uuid,
-            device=device,
+            acquisition_type="ucb",
+            ucb_beta=0.1,
+            device=str(device),
             dtype=dtype,
+            run_uuid=resume_uuid,
             checkpoint_dir=str(checkpoint_dir),
+            max_checkpoints=50,
             verbose=True,
+            needle_plot_points_ref=needle_plot_points,
         )
         print(
             f"✅ Resumed from activation={optimizer.current_activation}, "
@@ -502,7 +702,7 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
         )
 
     print("=" * 80)
-    print("STARTING OPTIMIZATION" + (" (DRY RUN - no apparatus)" if dry_run else ""))
+    print("STARTING OPTIMIZATION")
     print("=" * 80 + "\n")
 
     optimizer.run(max_activations=float("inf"), time_limit_hours=None)
@@ -511,19 +711,11 @@ def run_zombi_main(resume_uuid: str | None = None, dry_run: bool = False):
 if __name__ == "__main__":
     import sys
     resume_uuid = None
-    dry_run = False
     if len(sys.argv) >= 2:
         a1 = sys.argv[1].strip().lower()
         if a1 in ("-h", "--help", "help"):
-            print("Usage: python -m scripts.run_zombi_main [UUID] [--dry-run]")
-            print("  UUID     Resume this run (e.g. 6877).")
-            print("  --dry-run  No apparatus communication; print suggested endpoints/compositions and use synthetic Y.")
-            print("Example: python -m scripts.run_zombi_main 6877 --dry-run")
+            print("Usage: python -m scripts.run_zombi_main [UUID]")
+            print("  UUID     Resume this run (e.g. 6877). Omit for a new run.")
             sys.exit(0)
-        if a1 == "--dry-run":
-            print("Usage: provide resume UUID first, e.g. python -m scripts.run_zombi_main 6877 --dry-run")
-            sys.exit(1)
         resume_uuid = sys.argv[1]
-    if len(sys.argv) >= 3 and sys.argv[2].strip().lower() == "--dry-run":
-        dry_run = True
-    run_zombi_main(resume_uuid=resume_uuid, dry_run=dry_run)
+    run_zombi_main(resume_uuid=resume_uuid)

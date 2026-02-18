@@ -9,7 +9,7 @@ in simplex-constrained spaces, designed for materials research applications.
 # PyTorch and standard library
 import torch
 import time
-from typing import Callable, Tuple, Optional, List
+from typing import Callable, Tuple, Optional, List, Any
 
 # Simplex utilities: projection, random sampling, zero-sum directions
 from ..utils.simplex import (
@@ -27,7 +27,8 @@ if torch.cuda.is_available():
     torch.cuda.set_per_process_memory_fraction(0.95)
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    torch.set_default_device("cuda")
+    torch.set_default_dtype(torch.float32)
 
 
 class ZoMBIHop:
@@ -96,6 +97,11 @@ class ZoMBIHop:
     repulsion_lambda : float, optional
         Lambda for repulsive acquisition. If None, auto-computed dynamically
         as 10 * median(|acquisition_values|) during optimization. Default: None (auto).
+    acquisition_type : str
+        Base acquisition: "ucb" (Upper Confidence Bound) or "ei" (Expected Improvement).
+        Both are wrapped with needle repulsion. Default: "ucb".
+    ucb_beta : float
+        Exploration weight for UCB (mean + beta * std). Only used when acquisition_type=="ucb". Default: 0.1.
     device : str
         Torch device. Default: 'cuda'.
     dtype : torch.dtype
@@ -134,17 +140,21 @@ class ZoMBIHop:
                  n_consecutive_converged: int = 2,
                  max_gp_points: int = 3000,
                  repulsion_lambda: Optional[float] = None,
+                 acquisition_type: str = "ucb",
+                 ucb_beta: float = 0.1,
                  device: str = 'cuda',
                  dtype: torch.dtype = torch.float64,
                  run_uuid: Optional[str] = None,
                  checkpoint_dir: Optional[str] = 'zombihop_checkpoints',
                  max_checkpoints: Optional[int] = 50,
-                 verbose: bool = True):
-        """Initialize ZoMBIHop optimizer."""
+                 verbose: bool = True,
+                 needle_plot_points_ref: Optional[List[Any]] = None):
+        """Initialize ZoMBIHop optimizer. If needle_plot_points_ref is provided, append {sample_idx, y, distance} when a needle is found (for live plot stars)."""
         # --- Compute/device parameters ---
         self.device = torch.device(device)
         self.dtype = dtype
         self.verbose = verbose
+        self._needle_plot_points_ref = needle_plot_points_ref
 
         # --- CUDA optimization (clear cache, optional print) ---
         if self.device.type == 'cuda':
@@ -206,6 +216,8 @@ class ZoMBIHop:
 
         # --- Acquisition: repulsion_lambda=None => auto-compute dynamically ---
         self.repulsion_lambda = repulsion_lambda
+        self.acquisition_type = acquisition_type
+        self.ucb_beta = ucb_beta
 
         # --- Build config dataclass for checkpointing ---
         self.config = ZoMBIHopConfig(
@@ -223,6 +235,8 @@ class ZoMBIHop:
             output_noise_threshold_mult=output_noise_threshold_mult,
             n_consecutive_converged=n_consecutive_converged,
             repulsion_lambda=repulsion_lambda,  # May be None (auto-computed) or user-provided
+            acquisition_type=acquisition_type,
+            ucb_beta=ucb_beta,
             device=str(self.device),
             dtype=str(self.dtype),
         )
@@ -277,6 +291,8 @@ class ZoMBIHop:
             num_restarts=self.n_restarts,
             raw_samples=self.raw,
             repulsion_lambda=self.repulsion_lambda,
+            acquisition_type=self.acquisition_type,
+            ucb_beta=self.ucb_beta,
             device=str(self.device),
             dtype=self.dtype,
         )
@@ -459,6 +475,7 @@ class ZoMBIHop:
                 if elapsed_hours >= time_limit_hours:
                     self._log(f"Time limit of {time_limit_hours} hours reached. Stopping.")
                     finished = True
+                    self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                     self.data_handler.push_checkpoint(f"act{activation}_timeout", is_permanent=True)
                     break
                 self._log(f"Elapsed time: {elapsed_hours:.2f} / {time_limit_hours:.2f} hours")
@@ -492,6 +509,7 @@ class ZoMBIHop:
                         if elapsed_hours >= time_limit_hours:
                             self._log(f"Time limit reached during iteration.")
                             finished = True
+                            self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                             self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_timeout", is_permanent=True)
                             break
 
@@ -503,6 +521,7 @@ class ZoMBIHop:
                     if candidate is None:
                         self._log("No valid candidate found (all in penalized regions)")
                         activation_failed = True
+                        self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                         self._log_status(activation, zoom, iteration, None)
                         break
 
@@ -524,8 +543,12 @@ class ZoMBIHop:
                     self.gp_handler.fit(X, Y)
 
                     if unpenalized_Y.shape[0] == 0:
-                        self._log("No unpenalized Y values, breaking")
+                        self._log(
+                            "No unpenalized Y values, breaking — every point in this batch lies inside "
+                            "at least one needle penalty ball (no usable points for convergence check)."
+                        )
                         activation_failed = True
+                        self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                         self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_failed", is_permanent=True)
                         break
 
@@ -580,7 +603,16 @@ class ZoMBIHop:
                             zoom=zoom,
                             iteration=iteration,
                         )
+                        if self._needle_plot_points_ref is not None:
+                            center = self.data_handler.X_all_actual.mean(0)
+                            distance = torch.norm(needle_X - center).item()
+                            self._needle_plot_points_ref.append({
+                                "sample_idx": global_idx + 1,
+                                "y": needle_Y.item(),
+                                "distance": distance,
+                            })
 
+                        self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                         self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_iter{iteration}_needle", is_permanent=True)
                         break
 
@@ -588,20 +620,31 @@ class ZoMBIHop:
                     break
 
                 if needle is not None or activation_failed:
-                    # Check fraction of search space that is penalized
-                    # test_samples: (raw, d) — random points in simplex
+                    # Check fraction of current bounds that is penalized
                     test_samples = self.random_sampler(
                         self.raw, self.bounds[0], self.bounds[1],
                         device=str(self.device), torch_dtype=self.dtype
                     )
-                    # unpenalized_mask: (raw,) bool — True where sample is not in any penalty ball
                     unpenalized_mask = self.data_handler.get_penalty_mask(test_samples)
                     penalized_percentage = (1 - unpenalized_mask.float().mean().item()) * 100
 
                     if penalized_percentage > 90:
-                        self._log(f"Too much area penalized: {penalized_percentage:.2f}%. Ending.")
-                        finished = True
-                        self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_finished", is_permanent=True)
+                        if max_activations == float("inf"):
+                            # Infinite run: zoom out to full simplex and continue
+                            full_bounds = torch.zeros((2, self.d), device=self.device, dtype=self.dtype)
+                            full_bounds[0] = 0.0
+                            full_bounds[1] = 1.0
+                            self.data_handler.bounds = full_bounds.clone().to(device=self.data_handler.device, dtype=self.data_handler.dtype)
+                            self.bounds = self.data_handler.bounds
+                            self._log(f"Too much area penalized: {penalized_percentage:.2f}%. Zooming out to full simplex.")
+                            self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
+                            self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_zoomed_out", is_permanent=True)
+                        else:
+                            # Finite run: stop
+                            self._log(f"Too much area penalized: {penalized_percentage:.2f}%. Ending.")
+                            finished = True
+                            self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
+                            self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_finished", is_permanent=True)
                     break
 
                 if finished:
@@ -609,11 +652,15 @@ class ZoMBIHop:
                 # Zoom in: new bounds (2, d) around top_m best points
                 if zoom < self.max_zooms - 1:
                     bounds = self.data_handler.determine_new_bounds()
+                    self.data_handler.bounds = bounds.clone().to(device=self.data_handler.device, dtype=self.data_handler.dtype)
+                    self.bounds = self.data_handler.bounds
+                    self.data_handler.update_iteration_state(activation, zoom, iteration, self.data_handler.no_improvements)
                     self.data_handler.push_checkpoint(f"act{activation}_zoom{zoom}_complete", is_permanent=True)
 
             activation += 1
             zoom = 0
             iteration = 0
+            self.data_handler.update_iteration_state(activation, zoom, iteration, 0)
 
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()

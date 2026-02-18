@@ -6,6 +6,7 @@ Manages all data storage and retrieval for the ZoMBI-Hop optimization algorithm.
 Supports both persistent (file-based) and in-memory modes.
 """
 
+import re
 import torch
 import json
 import csv
@@ -282,6 +283,14 @@ class DataHandler:
             self.current_zoom = tracking['current_zoom']
             self.current_iteration = tracking['current_iteration']
             self.no_improvements = tracking['no_improvements']
+
+        # State label is authoritative: e.g. act10_zoom0_iter0_failed means we are at activation 10
+        # (fixes runs where tracking.json was saved with stale values before update_iteration_state)
+        match = re.match(r'act(\d+)_zoom(\d+)_iter(\d+)', iteration_label)
+        if match:
+            self.current_activation = int(match.group(1))
+            self.current_zoom = int(match.group(2))
+            self.current_iteration = int(match.group(3))
 
         # Rebuild checkpoint history
         states_dir = self.run_dir / 'states'

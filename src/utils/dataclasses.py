@@ -40,6 +40,8 @@ class ZoMBIHopConfig:
 
     # Acquisition parameters
     repulsion_lambda: Optional[float] = None  # Auto-computed dynamically if None
+    acquisition_type: str = "ucb"  # "ucb" or "ei"; both use repulsion
+    ucb_beta: float = 0.1  # Exploration weight for UCB (only when acquisition_type=="ucb")
 
     # Device and dtype
     device: str = 'cuda'

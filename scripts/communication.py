@@ -23,6 +23,10 @@ _objective_db_lock = threading.Lock()
 # Flag to indicate when objective data is being written
 _objective_writing = False
 
+# Last objective packet (dedup: only process/print once per distinct packet)
+_last_objective_vals = None
+_last_objective_comps = None
+
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully"""
     print(f"[Communication] Received signal {signum}, shutting down...")
@@ -294,7 +298,7 @@ def add_vector_to_first_row(x, db_path):
 
 
 # ─── Helper to write a 1D objective row ─────────────────────────────────────
-def _write_objective_row(vals, db_path):
+def _write_objective_row(vals, db_path, log_skip: bool = False):
     """
     Write objective values to the `objective` table.
     If the table already has data, check if the new data is different from memory DB.
@@ -354,24 +358,29 @@ def _write_objective_row(vals, db_path):
                                 # Check if data is the same
                                 if mem_flat.shape == incoming_flat.shape and np.allclose(mem_flat, incoming_flat, rtol=1e-6, atol=1e-8):
                                     # Data is identical to memory, skip write to prevent race condition
-                                    print(f"[_write_objective_row] Data identical to memory DB, skipping write to prevent race condition")
+                                    if log_skip:
+                                        print(f"[_write_objective_row] Data identical to memory DB, skipping write to prevent race condition")
                                     mem_conn.close()
                                     conn.close()
                                     return
                                 else:
                                     # Data is different, allow overwrite
-                                    print(f"[_write_objective_row] Data different from memory DB, allowing overwrite")
+                                    if log_skip:
+                                        print(f"[_write_objective_row] Data different from memory DB, allowing overwrite")
                                     mem_conn.close()
                             else:
                                 # Memory DB is empty, allow overwrite
-                                print(f"[_write_objective_row] Memory DB empty, allowing overwrite")
+                                if log_skip:
+                                    print(f"[_write_objective_row] Memory DB empty, allowing overwrite")
                                 mem_conn.close()
                         else:
                             # Memory DB doesn't exist, allow overwrite
-                            print(f"[_write_objective_row] Memory DB doesn't exist, allowing overwrite")
+                            if log_skip:
+                                print(f"[_write_objective_row] Memory DB doesn't exist, allowing overwrite")
                     except Exception as e:
                         # If there's an error checking memory DB, allow overwrite to be safe
-                        print(f"[_write_objective_row] Error checking memory DB: {e}, allowing overwrite")
+                        if log_skip:
+                            print(f"[_write_objective_row] Error checking memory DB: {e}, allowing overwrite")
                 
                 # Clear existing data and insert new data
                 cur.execute("DELETE FROM objective")
@@ -387,7 +396,8 @@ def _write_objective_row(vals, db_path):
                 cur.execute('UPDATE handshake SET new_objective_available = 1 WHERE id = 1')
                 
                 conn.commit()
-                print(f"[_write_objective_row] Successfully wrote {len(rows)} values to objective table and set handshake flag")
+                if log_skip:
+                    print(f"[_write_objective_row] Successfully wrote {len(rows)} values to objective table and set handshake flag")
                 
             except Exception as e:
                 conn.rollback()
@@ -413,7 +423,7 @@ def _write_compositions_matrix(mat, db_path):
 
 
 # ─── THREAD: receive JSON objective+comps & write to DB ─────────────────────
-def objective_receiver(hz, obj_db_path, mem_db_path, verbose=True, super_verbose=False):
+def objective_receiver(hz, obj_db_path, mem_db_path, verbose=False, super_verbose=False):
     pause = 1.0 / hz
     consecutive_errors = 0
     max_consecutive_errors = 10
@@ -451,9 +461,6 @@ def objective_receiver(hz, obj_db_path, mem_db_path, verbose=True, super_verbose
                     last_activity_time = time.time()  # Reset timer
                 continue
 
-            if verbose:
-                print(f"[objective_receiver] ▶ Received raw data: {len(raw)} bytes")
-
             try:
                 line = raw.decode("utf-8", errors="ignore").strip()
                 if super_verbose:
@@ -481,6 +488,28 @@ def objective_receiver(hz, obj_db_path, mem_db_path, verbose=True, super_verbose
             vals  = np.asarray(pkt["values"], dtype=float)
             comps = pkt.get("comps", None)
 
+            # Dedup: only process and print once per distinct packet (avoid filling terminal)
+            global _last_objective_vals, _last_objective_comps
+            try:
+                comps_match = (comps is None and _last_objective_comps is None) or (
+                    comps is not None and _last_objective_comps is not None
+                    and len(comps) == len(_last_objective_comps)
+                    and all(np.allclose(np.asarray(a), np.asarray(b)) for a, b in zip(comps, _last_objective_comps))
+                )
+            except Exception:
+                comps_match = False
+            vals_match = (
+                _last_objective_vals is not None
+                and vals.shape == _last_objective_vals.shape
+                and np.allclose(vals, _last_objective_vals, rtol=1e-6, atol=1e-8)
+            )
+            if vals_match and comps_match:
+                continue
+            _last_objective_vals = vals.copy()
+            _last_objective_comps = comps if comps is None else [np.asarray(c).copy() for c in comps]
+
+            if verbose:
+                print(f"[objective_receiver] ▶ Received raw data: {len(raw)} bytes")
             if super_verbose:
                 print(f"[objective_receiver] Processing objective values: {vals}, comps: {type(comps)}")
 
@@ -541,9 +570,10 @@ def objective_receiver(hz, obj_db_path, mem_db_path, verbose=True, super_verbose
                     try:
                         if super_verbose:
                             print(f"[objective_receiver] Writing objective data (attempt {attempt+1}): {vals}")
-                        _write_objective_row(vals.tolist(), obj_db_path)
-                        _write_objective_row(vals.tolist(), mem_db_path)
-                        if verbose: print("[objective_receiver] ✔ wrote objective", vals)
+                        _write_objective_row(vals.tolist(), obj_db_path, log_skip=False)
+                        _write_objective_row(vals.tolist(), mem_db_path, log_skip=False)
+                        if verbose:
+                            print("[objective_receiver] ✔ wrote objective", vals)
                         success = True
                         consecutive_errors = 0  # Reset error counter on success
                         break

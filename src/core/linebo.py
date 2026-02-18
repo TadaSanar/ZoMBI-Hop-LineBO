@@ -230,7 +230,9 @@ class LineBO:
     Parameters
     ----------
     objective_function : Callable
-        Function that accepts line endpoints (2, d) and returns (x_actual, y).
+        Function that accepts a single tensor of shape (num_lines, 2, d): all line
+        endpoints ranked by acquisition (highest first). endpoints[i, 0] is left
+        and endpoints[i, 1] is right for line i. Returns (x_actual, y) for the best line's evaluation.
     dimensions : int
         Number of dimensions (d).
     num_points_per_line : int
@@ -317,10 +319,15 @@ class LineBO:
 
         return integrated
 
-    def sampler(self, x_tell: torch.Tensor, bounds: torch.Tensor = None,
-                acquisition_function: nn.Module = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def ranked_line_endpoints(
+        self,
+        x_tell: torch.Tensor,
+        bounds: torch.Tensor = None,
+        acquisition_function: nn.Module = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Sample points using LineBO: pick best line (by acquisition or random), evaluate objective, return requested/actual/y.
+        Return all evaluated line endpoints ranked by integrated acquisition (best first).
+        Does not call the objective.
 
         Parameters
         ----------
@@ -329,12 +336,12 @@ class LineBO:
         bounds : torch.Tensor, optional
             Bounds tensor (2, d) with [lower, upper] bounds.
         acquisition_function : nn.Module, optional
-            Acquisition function to optimize. If None, random selection.
+            Acquisition function to rank lines. If None, random order.
 
         Returns
         -------
         tuple
-            (x_requested, x_actual, y) tensors.
+            (x_left_ranked, x_right_ranked) both shape (n_lines, d), best line first.
         """
         x_tell = x_tell.to(device=self.device, dtype=self.dtype)  # (d,)
         if bounds is not None:
@@ -380,23 +387,44 @@ class LineBO:
             x_left = x_tell.unsqueeze(0)   # (1, d)
             x_right = x_tell.unsqueeze(0)  # degenerate line
 
-        # Pick best line: by max integrated acquisition, or random if no acquisition
+        # Rank by integrated acquisition (best first)
         if acquisition_function is None:
-            best_idx = torch.randint(0, x_left.shape[0], (1,), device=self.device).item()
+            order = torch.randperm(x_left.shape[0], device=self.device)
         else:
             integrated_values = self._integrate_acquisition_along_lines(
                 x_left, x_right, acquisition_function)  # (num_lines,)
             if integrated_values.numel() == 0:
-                best_idx = 0
+                order = torch.arange(x_left.shape[0], device=self.device)
             else:
-                best_idx = torch.argmax(integrated_values).item()
+                order = torch.argsort(integrated_values, descending=True)
 
-        selected_left = x_left[best_idx]   # (d,)
-        selected_right = x_right[best_idx]  # (d,)
+        x_left_ranked = x_left[order]   # (n_lines, d)
+        x_right_ranked = x_right[order]  # (n_lines, d)
+        return x_left_ranked, x_right_ranked
 
-        endpoints = torch.stack([selected_left, selected_right], dim=0)  # (2, d)
+    def sampler(self, x_tell: torch.Tensor, bounds: torch.Tensor = None,
+                acquisition_function: nn.Module = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sample points using LineBO: pick best line (by acquisition or random), evaluate objective, return requested/actual/y.
 
-        x_actual, y = self.objective_function(endpoints)
+        Parameters
+        ----------
+        x_tell : torch.Tensor
+            Starting point (d,) on simplex.
+        bounds : torch.Tensor, optional
+            Bounds tensor (2, d) with [lower, upper] bounds.
+        acquisition_function : nn.Module, optional
+            Acquisition function to optimize. If None, random selection.
+
+        Returns
+        -------
+        tuple
+            (x_requested, x_actual, y) tensors.
+        """
+        x_left_ranked, x_right_ranked = self.ranked_line_endpoints(x_tell, bounds, acquisition_function)
+        # (num_lines, 2, d): [i, 0] = left, [i, 1] = right, ranked best first
+        endpoints_ranked = torch.stack([x_left_ranked, x_right_ranked], dim=1)
+        x_actual, y = self.objective_function(endpoints_ranked)
         # x_actual: (n, d), y: (n,) or (n, 1)
 
         assert torch.is_tensor(x_actual) and x_actual.shape[1] == self.d
