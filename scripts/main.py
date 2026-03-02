@@ -69,7 +69,7 @@ def start_serial():
             baud=9600,
             obj_hz=1.0,
             comp_hz=1.0,
-            chaos=False
+            chaos=True
         )
     except Exception as e:
         print(f"[Serial Process] Error: {e}")

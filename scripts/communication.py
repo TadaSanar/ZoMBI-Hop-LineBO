@@ -72,6 +72,14 @@ def write_compositions(start,
       - timestamp          : a single REAL ts
     """
     # -- shape validations --
+
+    start = np.array([0.5,0,0,0,0,0,0,0,0.5,0])
+    start_cache = start
+    end = np.array([0,0,0,0,0,0,0,0,0,1.0])
+    end_cache = end
+    array = np.linspace(start,end,24)
+    array_cache =array
+
     for name, arr in [("array", array), ("array_cache", array_cache)]:
         if arr.ndim != 2 or arr.shape[1] != 10:
             raise ValueError(f"`{name}` must be 2D with exactly 10 columns")
