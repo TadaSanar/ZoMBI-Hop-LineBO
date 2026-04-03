@@ -1,0 +1,631 @@
+{
+  "evaluations": [
+    {
+      "eval_idx": 0,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0089169100561715,
+        "max_iterations": 13,
+        "max_zooms": 3,
+        "nat_grad_max_steps": 38,
+        "nat_grad_step": 0.09582872301340103,
+        "num_lines": 10,
+        "num_points_per_line": 38,
+        "penalization_threshold": 0.0011025501014505117,
+        "penalty_max_radius": 0.43111191391944886,
+        "ucb_beta": 1.5254014891386032
+      },
+      "avg_dist": 0.4930302824675354,
+      "dup_frac": 0.039908140884869256,
+      "score": 0.4946428197587672
+    },
+    {
+      "eval_idx": 1,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.07623717900539737,
+        "max_iterations": 7,
+        "max_zooms": 5,
+        "nat_grad_max_steps": 66,
+        "nat_grad_step": 0.04525440139696002,
+        "num_lines": 44,
+        "num_points_per_line": 119,
+        "penalization_threshold": 0.09247561597703215,
+        "penalty_max_radius": 0.2070808267220855,
+        "ucb_beta": 0.053715257318690424
+      },
+      "avg_dist": 0.5423700746800773,
+      "dup_frac": 0.1263696315488177,
+      "score": 0.5568972810907381
+    },
+    {
+      "eval_idx": 2,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.011170105210255365,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 22,
+        "nat_grad_step": 0.026000971123576164,
+        "num_lines": 54,
+        "num_points_per_line": 71,
+        "penalization_threshold": 0.004844083215031524,
+        "penalty_max_radius": 0.12934449436143042,
+        "ucb_beta": 0.6497979243658483
+      },
+      "avg_dist": 0.5670046956411403,
+      "dup_frac": 0.046736468370239245,
+      "score": 0.5689276073059072
+    },
+    {
+      "eval_idx": 3,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0013198139619565413,
+        "max_iterations": 9,
+        "max_zooms": 5,
+        "nat_grad_max_steps": 84,
+        "nat_grad_step": 0.06443936452735216,
+        "num_lines": 19,
+        "num_points_per_line": 176,
+        "penalization_threshold": 0.0003117814430708501,
+        "penalty_max_radius": 0.35355646889656783,
+        "ucb_beta": 1.1693241886235775
+      },
+      "avg_dist": 0.49236028351928984,
+      "dup_frac": 0.08371958911493567,
+      "score": 0.4994272903924746
+    },
+    {
+      "eval_idx": 4,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0031396465160086146,
+        "max_iterations": 18,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 98,
+        "nat_grad_step": 0.0603311447519809,
+        "num_lines": 14,
+        "num_points_per_line": 105,
+        "penalization_threshold": 0.008182305042372617,
+        "penalty_max_radius": 0.05136085604317486,
+        "ucb_beta": 0.47798072774894534
+      },
+      "avg_dist": 0.6063151370820544,
+      "dup_frac": 0.05464705924745382,
+      "score": 0.6087728201383709
+    },
+    {
+      "eval_idx": 5,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.026812027598979087,
+        "max_iterations": 11,
+        "max_zooms": 2,
+        "nat_grad_max_steps": 14,
+        "nat_grad_step": 0.01005850977730006,
+        "num_lines": 34,
+        "num_points_per_line": 187,
+        "penalization_threshold": 0.00012019596353845035,
+        "penalty_max_radius": 0.2773469391744584,
+        "ucb_beta": 1.9639956598822028
+      },
+      "avg_dist": 0.5725495678147613,
+      "dup_frac": 0.04978262608034504,
+      "score": 0.5747097680258492
+    },
+    {
+      "eval_idx": 6,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.03169378758579927,
+        "max_iterations": 15,
+        "max_zooms": 4,
+        "nat_grad_max_steps": 58,
+        "nat_grad_step": 0.03814282224979251,
+        "num_lines": 52,
+        "num_points_per_line": 49,
+        "penalization_threshold": 0.0022892317615185453,
+        "penalty_max_radius": 0.48095332910306754,
+        "ucb_beta": 1.3513982300646603
+      },
+      "avg_dist": 1.0,
+      "dup_frac": 1.0,
+      "score": 1.4142135623730951
+    },
+    {
+      "eval_idx": 7,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0037404686595482036,
+        "max_iterations": 5,
+        "max_zooms": 2,
+        "nat_grad_max_steps": 53,
+        "nat_grad_step": 0.07697531572543086,
+        "num_lines": 32,
+        "num_points_per_line": 153,
+        "penalization_threshold": 0.02884387322123538,
+        "penalty_max_radius": 0.2551824714522809,
+        "ucb_beta": 0.8486294372193516
+      },
+      "avg_dist": 0.520966608788848,
+      "dup_frac": 0.16544875705856932,
+      "score": 0.5466072618298975
+    },
+    {
+      "eval_idx": 8,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 3,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "num_lines": 5,
+        "num_points_per_line": 68,
+        "penalization_threshold": 0.0011669849249267181,
+        "penalty_max_radius": 0.425748905854771,
+        "ucb_beta": 0.6484284641954988
+      },
+      "avg_dist": 0.5451793211099264,
+      "dup_frac": 0.25831830605040873,
+      "score": 0.6032817247411303
+    },
+    {
+      "eval_idx": 9,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.004317163777306326,
+        "max_iterations": 13,
+        "max_zooms": 4,
+        "nat_grad_max_steps": 62,
+        "nat_grad_step": 0.006194677360332182,
+        "num_lines": 34,
+        "num_points_per_line": 186,
+        "penalization_threshold": 0.00011381843352498565,
+        "penalty_max_radius": 0.14171367029876378,
+        "ucb_beta": 0.8053326617609871
+      },
+      "avg_dist": 0.5755646385226225,
+      "dup_frac": 0.102831497746668,
+      "score": 0.584678518543738
+    },
+    {
+      "eval_idx": 10,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.025361657480236787,
+        "max_iterations": 19,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 39,
+        "nat_grad_step": 0.0777643372628201,
+        "num_lines": 13,
+        "num_points_per_line": 81,
+        "penalization_threshold": 0.0010365172717930417,
+        "penalty_max_radius": 0.27771388295987265,
+        "ucb_beta": 1.422694688834928
+      },
+      "avg_dist": 0.524690611298779,
+      "dup_frac": 0.025247045053951464,
+      "score": 0.5252976783396656
+    },
+    {
+      "eval_idx": 11,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.003912185847226018,
+        "max_iterations": 5,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.054136290505722634,
+        "num_lines": 10,
+        "num_points_per_line": 181,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.37786910516114064,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.4132408046739375,
+      "dup_frac": 0.0035238138579780313,
+      "score": 0.4132558286481499
+    },
+    {
+      "eval_idx": 12,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.1,
+        "num_lines": 12,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.3659937226459036,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.513641964554048,
+      "dup_frac": 0.01358444782840296,
+      "score": 0.5138215691986319
+    },
+    {
+      "eval_idx": 13,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 10,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "num_lines": 14,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.3401163524028255,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.28045134665027893,
+      "dup_frac": 0.03203669574524613,
+      "score": 0.2822752339689552
+    },
+    {
+      "eval_idx": 14,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 12,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "num_lines": 9,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.0010661979723144313,
+        "penalty_max_radius": 0.39732207899533545,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5659759834030021,
+      "dup_frac": 0.004353419371441684,
+      "score": 0.5659927261451502
+    },
+    {
+      "eval_idx": 15,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.1,
+        "num_lines": 15,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.3461779328354218,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5307172413691015,
+      "dup_frac": 0.0029450395759457373,
+      "score": 0.5307254125671136
+    },
+    {
+      "eval_idx": 16,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "num_lines": 19,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.24484567691197934,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5572746600646528,
+      "dup_frac": 0.004865298731408743,
+      "score": 0.5572958979589928
+    },
+    {
+      "eval_idx": 17,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.02654168738653996,
+        "max_iterations": 17,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "num_lines": 17,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.34246595975349,
+        "ucb_beta": 1.0436019275675774
+      },
+      "avg_dist": 0.5861647782981411,
+      "dup_frac": 0.005577900957895352,
+      "score": 0.5861913171451834
+    },
+    {
+      "eval_idx": 18,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 3,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "num_lines": 44,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.13403317456749705,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5520416136104331,
+      "dup_frac": 0.20467381547679023,
+      "score": 0.5887625275944776
+    },
+    {
+      "eval_idx": 19,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 74,
+        "nat_grad_step": 0.005,
+        "num_lines": 13,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.31524088288133756,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.12238473996171394,
+      "dup_frac": 0.012228260869565218,
+      "score": 0.12299412562960266
+    },
+    {
+      "eval_idx": 20,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 82,
+        "nat_grad_step": 0.005,
+        "num_lines": 60,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.15019064399585583,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.55088337989013,
+      "dup_frac": 0.015268752343292322,
+      "score": 0.5510949401303682
+    },
+    {
+      "eval_idx": 21,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 11,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 52,
+        "nat_grad_step": 0.005,
+        "num_lines": 16,
+        "num_points_per_line": 94,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.31925777800492117,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.555338490656055,
+      "dup_frac": 0.06165233485504813,
+      "score": 0.5587502569102087
+    },
+    {
+      "eval_idx": 22,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "num_lines": 8,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.291151540188507,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.12285303827305681,
+      "dup_frac": 0.024626358695652176,
+      "score": 0.12529695349659578
+    },
+    {
+      "eval_idx": 23,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "num_lines": 5,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.16243635503201892,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.1386064122537026,
+      "dup_frac": 0.025645380434782608,
+      "score": 0.14095894102712353
+    },
+    {
+      "eval_idx": 24,
+      "phase": "mobo_round_5",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 80,
+        "nat_grad_step": 0.005,
+        "num_lines": 11,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.22901589585844578,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.16308200193955535,
+      "dup_frac": 0.017004407476139977,
+      "score": 0.16396612220281281
+    },
+    {
+      "eval_idx": 25,
+      "phase": "mobo_round_5",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "num_lines": 22,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.18736363371426323,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.11951288816148008,
+      "dup_frac": 0.014605978260869564,
+      "score": 0.12040209731418901
+    },
+    {
+      "eval_idx": 26,
+      "phase": "mobo_round_5",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "num_lines": 5,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.05,
+        "ucb_beta": 1.6414812135403372
+      },
+      "avg_dist": 0.545253847125712,
+      "dup_frac": 0.4156681248593189,
+      "score": 0.6856250781800879
+    },
+    {
+      "eval_idx": 27,
+      "phase": "mobo_round_5",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 39,
+        "nat_grad_step": 0.005,
+        "num_lines": 16,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.23759767188133346,
+        "ucb_beta": 1.6112938386094708
+      },
+      "avg_dist": 0.3153978526868585,
+      "dup_frac": 0.0014339862741914017,
+      "score": 0.3154011125473654
+    },
+    {
+      "eval_idx": 28,
+      "phase": "mobo_round_6",
+      "config": {
+        "convergence_pi_threshold": 0.09561176742734295,
+        "max_iterations": 14,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 66,
+        "nat_grad_step": 0.005,
+        "num_lines": 5,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.04708113837287604,
+        "penalty_max_radius": 0.10660114170990088,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5970824176307624,
+      "dup_frac": 0.019098446342307923,
+      "score": 0.5973877836853431
+    },
+    {
+      "eval_idx": 29,
+      "phase": "mobo_round_6",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "num_lines": 14,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.2282096746080406,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.0732999670126583,
+      "dup_frac": 0.012398097826086958,
+      "score": 0.07434109222873994
+    },
+    {
+      "eval_idx": 30,
+      "phase": "mobo_round_6",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 3,
+        "max_zooms": 1,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "num_lines": 35,
+        "num_points_per_line": 20,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.05,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.23671031352793476,
+      "dup_frac": 0.012611925280519527,
+      "score": 0.23704605710657703
+    },
+    {
+      "eval_idx": 31,
+      "phase": "mobo_round_6",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 6,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "num_lines": 44,
+        "num_points_per_line": 200,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.05922587208374227,
+        "ucb_beta": 0.01973905340875764
+      },
+      "avg_dist": 0.58458072374447,
+      "dup_frac": 0.01353672940072562,
+      "score": 0.584737433055621
+    }
+  ],
+  "best_so_far": {
+    "eval_idx": 29,
+    "phase": "mobo_round_6",
+    "config": {
+      "convergence_pi_threshold": 0.0010000000000000002,
+      "max_iterations": 3,
+      "max_zooms": 1,
+      "nat_grad_max_steps": 100,
+      "nat_grad_step": 0.005,
+      "num_lines": 14,
+      "num_points_per_line": 20,
+      "penalization_threshold": 0.00010000000000000009,
+      "penalty_max_radius": 0.2282096746080406,
+      "ucb_beta": 2.0
+    },
+    "avg_dist": 0.0732999670126583,
+    "dup_frac": 0.012398097826086958,
+    "score": 0.07434109222873994
+  }
+}

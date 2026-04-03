@@ -1,0 +1,295 @@
+{
+  "regions_path": "max_min_regions.json",
+  "regions_loaded": false,
+  "csv_path": "/Users/jacksonkay/ZoMBI-Hop_final/ZoMBI-Hop-LineBO/scripts/campaign_1a_validation_set_1_766_compositions_MAFAPbIBr (2).csv",
+  "csv_rf_columns_built": [
+    "Bandgap",
+    "Photoconductance",
+    "Stability",
+    "Objective"
+  ],
+  "csv_build_error": null,
+  "rf_cache_dir": "/Users/jacksonkay/ZoMBI-Hop_final/ZoMBI-Hop-LineBO/test_rfs",
+  "rf_global_samples": 10000000,
+  "top_L_cap": 10,
+  "noise_combos": [
+    [
+      0.01,
+      0.01
+    ],
+    [
+      0.01,
+      0.001
+    ],
+    [
+      0.001,
+      0.01
+    ],
+    [
+      0.001,
+      0.001
+    ]
+  ],
+  "n_objective_modes": 16,
+  "n_sub_runs_per_mobo_eval": 64,
+  "objective_rows": [
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Bandgap (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Bandgap",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_max",
+      "known_extrema": [
+        [
+          0.0006367319860254522,
+          0.005571153519184459,
+          0.9937921144947901
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Bandgap (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Bandgap",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_min",
+      "known_extrema": [
+        [
+          0.3171776230054147,
+          0.5747535321437733,
+          0.10806884485081196
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Photoconductance (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Photoconductance",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_max",
+      "known_extrema": [
+        [
+          0.36958912615750306,
+          0.5214018571036024,
+          0.10900901673889453
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Photoconductance (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Photoconductance",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_min",
+      "known_extrema": [
+        [
+          0.37937827363207977,
+          0.5396479237070347,
+          0.08097380266088562
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Stability (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Stability",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_max",
+      "known_extrema": [
+        [
+          0.037755444584875904,
+          0.7940517863871129,
+          0.16819276902801114
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Stability (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Stability",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_min",
+      "known_extrema": [
+        [
+          0.10835254371986446,
+          0.3206778538774733,
+          0.5709696024026624
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Objective (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Objective",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_max",
+      "known_extrema": [
+        [
+          0.4328872269155706,
+          0.5488002148847285,
+          0.018312558199700964
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "csv_rf",
+      "base_name": "CSV-RF-Objective (FAPbI3/MAPbI3/MAPbBr3)",
+      "region_key": "RF-Objective",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_rf_global_min",
+      "known_extrema": [
+        [
+          0.16688974655240593,
+          0.1156918738289705,
+          0.7174183796186234
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Centroid",
+      "region_key": "Ackley-Centroid",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_analytic_maxima",
+      "known_extrema": [
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Centroid",
+      "region_key": "Ackley-Centroid",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "ackley_min_no_analytic_fallback",
+      "known_extrema": [],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Edge",
+      "region_key": "Ackley-Edge",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_analytic_maxima",
+      "known_extrema": [
+        [
+          0.5,
+          0.5,
+          0.0
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Edge",
+      "region_key": "Ackley-Edge",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "ackley_min_no_analytic_fallback",
+      "known_extrema": [],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Vertex",
+      "region_key": "Ackley-Vertex",
+      "mode": "max",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "from_analytic_maxima",
+      "known_extrema": [
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Vertex",
+      "region_key": "Ackley-Vertex",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "ackley_min_no_analytic_fallback",
+      "known_extrema": [],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Multi-modal",
+      "region_key": "Ackley-Multi-modal",
+      "mode": "max",
+      "L": 3,
+      "max_activations": 4,
+      "seed_source": "from_analytic_maxima",
+      "known_extrema": [
+        [
+          0.3333333333333333,
+          0.3333333333333333,
+          0.3333333333333333
+        ],
+        [
+          0.5,
+          0.5,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "regions_json_summary": null
+    },
+    {
+      "kind": "ackley",
+      "base_name": "Ackley-Multi-modal",
+      "region_key": "Ackley-Multi-modal",
+      "mode": "min",
+      "L": 1,
+      "max_activations": 2,
+      "seed_source": "ackley_min_no_analytic_fallback",
+      "known_extrema": [],
+      "regions_json_summary": null
+    }
+  ]
+}

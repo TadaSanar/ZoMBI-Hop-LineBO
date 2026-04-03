@@ -661,10 +661,19 @@ class GPSimplex:
         if radius_step is None:
             input_noise = self.data_handler.get_input_noise()
             # Use 3x input noise as minimum meaningful step, with floor of 0.005
-            radius_step = max(3.0 * input_noise, 0.005)
+            radius_step = max(2.0 * input_noise, 0.005)
 
-        dirs = random_zero_sum_directions(num_directions, d, device=str(self.device), dtype=self.dtype)
-        dirs = dirs / dirs.norm(dim=1, keepdim=True)
+        # Sample random simplex points and construct directions as
+        # unit vectors from the needle toward each sampled point.
+        # This keeps probe directions geometrically grounded on the simplex
+        # rather than restricted to the zero-sum subspace.
+        lo = torch.zeros(d, device=self.device, dtype=self.dtype)
+        hi = torch.ones(d, device=self.device, dtype=self.dtype)
+        pts = random_simplex(num_directions, lo, hi,
+                             device=str(self.device), torch_dtype=self.dtype)  # (k, d)
+        raw_dirs = pts - needle.unsqueeze(0)  # (k, d)
+        norms = raw_dirs.norm(dim=1, keepdim=True).clamp(min=1e-12)
+        dirs = raw_dirs / norms
 
         r = radius_step
         while r <= max_radius:

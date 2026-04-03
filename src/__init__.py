@@ -14,12 +14,13 @@ __version__ = "0.1.0"
 __author__ = "Your Name"
 
 from .core.zombihop import ZoMBIHop
-from .core.linebo import LineBO, line_simplex_segment, batch_line_simplex_segments, zero_sum_dirs
+from .core.linebo import LineBO, line_simplex_segment, batch_line_simplex_segments, batch_line_bounds_segments, zero_sum_dirs
 
 __all__ = [
     "ZoMBIHop",
     "LineBO",
     "line_simplex_segment",
     "batch_line_simplex_segments",
+    "batch_line_bounds_segments",
     "zero_sum_dirs",
 ]

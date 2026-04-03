@@ -1,0 +1,479 @@
+{
+  "evaluations": [
+    {
+      "eval_idx": 0,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0089169100561715,
+        "max_iterations": 13,
+        "max_zooms": 3,
+        "n_restarts": 35,
+        "nat_grad_max_steps": 96,
+        "nat_grad_step": 0.01291371252387762,
+        "penalization_threshold": 0.00019782923185943335,
+        "penalty_max_radius": 0.20635975003242496,
+        "raw_samples": 1701,
+        "ucb_beta": 1.5254014891386032
+      },
+      "avg_dist": 0.584601874065649,
+      "dup_frac": 0.04288065885768214,
+      "score": 0.5861724166703325
+    },
+    {
+      "eval_idx": 1,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.07623717900539737,
+        "max_iterations": 7,
+        "max_zooms": 5,
+        "n_restarts": 64,
+        "nat_grad_max_steps": 48,
+        "nat_grad_step": 0.07270826703868807,
+        "penalization_threshold": 0.004450562089255964,
+        "penalty_max_radius": 0.49490408492274585,
+        "raw_samples": 731,
+        "ucb_beta": 0.053715257318690424
+      },
+      "avg_dist": 1.0,
+      "dup_frac": 1.0,
+      "score": 1.4142135623730951
+    },
+    {
+      "eval_idx": 2,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.011170105210255365,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "n_restarts": 18,
+        "nat_grad_max_steps": 30,
+        "nat_grad_step": 0.08922825536690653,
+        "penalization_threshold": 0.000709079553860057,
+        "penalty_max_radius": 0.3027817392721772,
+        "raw_samples": 394,
+        "ucb_beta": 0.6497979243658483
+      },
+      "avg_dist": 0.5287558038236299,
+      "dup_frac": 0.014108095231548483,
+      "score": 0.5289439842064899
+    },
+    {
+      "eval_idx": 3,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0013198139619565413,
+        "max_iterations": 9,
+        "max_zooms": 5,
+        "n_restarts": 83,
+        "nat_grad_max_steps": 66,
+        "nat_grad_step": 0.02944421034306288,
+        "penalization_threshold": 0.03937328087960914,
+        "penalty_max_radius": 0.12407753942534328,
+        "raw_samples": 1365,
+        "ucb_beta": 1.1693241886235775
+      },
+      "avg_dist": 0.5671689831391559,
+      "dup_frac": 0.10180193180061983,
+      "score": 0.5762328424807477
+    },
+    {
+      "eval_idx": 4,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0031396465160086146,
+        "max_iterations": 18,
+        "max_zooms": 6,
+        "n_restarts": 98,
+        "nat_grad_max_steps": 62,
+        "nat_grad_step": 0.021264010150916876,
+        "penalization_threshold": 0.0026236077924785945,
+        "penalty_max_radius": 0.33693134994246066,
+        "raw_samples": 56,
+        "ucb_beta": 0.47798072774894534
+      },
+      "avg_dist": 0.5456059084318382,
+      "dup_frac": 0.02449631483033664,
+      "score": 0.5461555426396388
+    },
+    {
+      "eval_idx": 5,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.026812027598979087,
+        "max_iterations": 11,
+        "max_zooms": 2,
+        "n_restarts": 9,
+        "nat_grad_max_steps": 15,
+        "nat_grad_step": 0.055822762376628816,
+        "penalization_threshold": 0.059831304437660035,
+        "penalty_max_radius": 0.061983482493087654,
+        "raw_samples": 1035,
+        "ucb_beta": 1.9639956598822028
+      },
+      "avg_dist": 0.5760273147248547,
+      "dup_frac": 0.024081898579119337,
+      "score": 0.5765304893483967
+    },
+    {
+      "eval_idx": 6,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.03169378758579927,
+        "max_iterations": 15,
+        "max_zooms": 4,
+        "n_restarts": 56,
+        "nat_grad_max_steps": 41,
+        "nat_grad_step": 0.0868169075017795,
+        "penalization_threshold": 0.0003006517887043186,
+        "penalty_max_radius": 0.253953464422375,
+        "raw_samples": 1917,
+        "ucb_beta": 1.3513982300646603
+      },
+      "avg_dist": 0.5767990944252241,
+      "dup_frac": 0.016816378399372497,
+      "score": 0.5770441802082658
+    },
+    {
+      "eval_idx": 7,
+      "phase": "sobol_init",
+      "config": {
+        "convergence_pi_threshold": 0.0037404686595482036,
+        "max_iterations": 5,
+        "max_zooms": 2,
+        "n_restarts": 50,
+        "nat_grad_max_steps": 78,
+        "nat_grad_step": 0.052265765597112476,
+        "penalization_threshold": 0.016472398325438044,
+        "penalty_max_radius": 0.41900803670287134,
+        "raw_samples": 939,
+        "ucb_beta": 0.8486294372193516
+      },
+      "avg_dist": 1.0,
+      "dup_frac": 1.0,
+      "score": 1.4142135623730951
+    },
+    {
+      "eval_idx": 8,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 18,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.06600523093805499,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.13099557007105925,
+        "raw_samples": 2000,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.536590383106826,
+      "dup_frac": 0.028639095976926404,
+      "score": 0.5373541076991093
+    },
+    {
+      "eval_idx": 9,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 19,
+        "max_zooms": 6,
+        "n_restarts": 38,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.22982399848626045,
+        "raw_samples": 2000,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.6006204768850683,
+      "dup_frac": 0.03907173636007235,
+      "score": 0.6018899881505239
+    },
+    {
+      "eval_idx": 10,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 17,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 78,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.0001016513126025034,
+        "penalty_max_radius": 0.14911830487138145,
+        "raw_samples": 50,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.546214901298956,
+      "dup_frac": 0.03481128043672955,
+      "score": 0.547323070632577
+    },
+    {
+      "eval_idx": 11,
+      "phase": "mobo_round_1",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 17,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.1141722695216843,
+        "raw_samples": 50,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5954691141918218,
+      "dup_frac": 0.004120393990479833,
+      "score": 0.595483369711556
+    },
+    {
+      "eval_idx": 12,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 17,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.08279048901542442,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.21408139482477961,
+        "raw_samples": 50,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5436506617269286,
+      "dup_frac": 0.009501039165671622,
+      "score": 0.5437336772183188
+    },
+    {
+      "eval_idx": 13,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 12,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.05,
+        "raw_samples": 2000,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5742258446495194,
+      "dup_frac": 0.07231441223116468,
+      "score": 0.5787613453573008
+    },
+    {
+      "eval_idx": 14,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.30321803577569123,
+        "raw_samples": 2000,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5285389379282674,
+      "dup_frac": 0.007248062051623241,
+      "score": 0.5285886333528609
+    },
+    {
+      "eval_idx": 15,
+      "phase": "mobo_round_2",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 16,
+        "max_zooms": 1,
+        "n_restarts": 5,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.1866054722126459,
+        "raw_samples": 50,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5243566233443973,
+      "dup_frac": 0.023935398765868865,
+      "score": 0.5249026307413778
+    },
+    {
+      "eval_idx": 16,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.5,
+        "raw_samples": 2000,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.47879629353121217,
+      "dup_frac": 0.005953375757999016,
+      "score": 0.4788333043786142
+    },
+    {
+      "eval_idx": 17,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 17,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.22931836128900912,
+        "raw_samples": 2000,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5542673838622896,
+      "dup_frac": 0.005511533145883228,
+      "score": 0.554294786021991
+    },
+    {
+      "eval_idx": 18,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 18,
+        "max_zooms": 6,
+        "n_restarts": 5,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.23263545196686414,
+        "raw_samples": 50,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.5251545518714428,
+      "dup_frac": 0.008298527746413358,
+      "score": 0.5252201147272006
+    },
+    {
+      "eval_idx": 19,
+      "phase": "mobo_round_3",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 19,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.26790007792015796,
+        "raw_samples": 50,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.49450715538441864,
+      "dup_frac": 0.021572844610191814,
+      "score": 0.4949774887315231
+    },
+    {
+      "eval_idx": 20,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.5,
+        "raw_samples": 2000,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 0.49833470702570615,
+      "dup_frac": 0.018949971019181635,
+      "score": 0.4986948782853341
+    },
+    {
+      "eval_idx": 21,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.005,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.5,
+        "raw_samples": 50,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 1.0,
+      "dup_frac": 1.0,
+      "score": 1.4142135623730951
+    },
+    {
+      "eval_idx": 22,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.0010000000000000002,
+        "max_iterations": 20,
+        "max_zooms": 1,
+        "n_restarts": 5,
+        "nat_grad_max_steps": 100,
+        "nat_grad_step": 0.1,
+        "penalization_threshold": 0.00010000000000000009,
+        "penalty_max_radius": 0.5,
+        "raw_samples": 50,
+        "ucb_beta": 0.01
+      },
+      "avg_dist": 1.0,
+      "dup_frac": 1.0,
+      "score": 1.4142135623730951
+    },
+    {
+      "eval_idx": 23,
+      "phase": "mobo_round_4",
+      "config": {
+        "convergence_pi_threshold": 0.10000000000000006,
+        "max_iterations": 14,
+        "max_zooms": 6,
+        "n_restarts": 100,
+        "nat_grad_max_steps": 10,
+        "nat_grad_step": 0.005,
+        "penalization_threshold": 0.10000000000000006,
+        "penalty_max_radius": 0.10820886566551384,
+        "raw_samples": 2000,
+        "ucb_beta": 2.0
+      },
+      "avg_dist": 0.5801819930544597,
+      "dup_frac": 0.014344120209531866,
+      "score": 0.5803592842793425
+    }
+  ],
+  "best_so_far": {
+    "eval_idx": 16,
+    "phase": "mobo_round_3",
+    "config": {
+      "convergence_pi_threshold": 0.10000000000000006,
+      "max_iterations": 20,
+      "max_zooms": 1,
+      "n_restarts": 100,
+      "nat_grad_max_steps": 10,
+      "nat_grad_step": 0.1,
+      "penalization_threshold": 0.00010000000000000009,
+      "penalty_max_radius": 0.5,
+      "raw_samples": 2000,
+      "ucb_beta": 2.0
+    },
+    "avg_dist": 0.47879629353121217,
+    "dup_frac": 0.005953375757999016,
+    "score": 0.4788333043786142
+  }
+}

@@ -218,6 +218,73 @@ def batch_line_simplex_segments(x0: torch.Tensor, D: torch.Tensor) -> Tuple[torc
     return x_left, x_right, t_min, t_max, mask
 
 
+def batch_line_bounds_segments(
+    x0: torch.Tensor,
+    D: torch.Tensor,
+    bounds: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Find intersections of multiple lines with an axis-aligned zoomed box (batched).
+
+    Clips each line x0 + t*D[i] to the box [bounds[0], bounds[1]] instead of
+    the full simplex boundary.  Zero-sum directions preserve the sum=1 constraint,
+    so every point on a clipped segment is still on the simplex.
+
+    Parameters
+    ----------
+    x0 : torch.Tensor
+        Starting point (d,) — must lie inside the box.
+    D : torch.Tensor
+        Direction vectors (k, d).
+    bounds : torch.Tensor
+        (2, d) tensor: bounds[0] = lower, bounds[1] = upper.
+
+    Returns
+    -------
+    tuple
+        (x_left, x_right, t_min, t_max, mask) same convention as
+        batch_line_simplex_segments, where mask marks valid (non-degenerate) lines.
+    """
+    lo = bounds[0]   # (d,)
+    hi = bounds[1]   # (d,)
+
+    pos = D > 0    # (k, d)
+    neg = D < 0    # (k, d)
+
+    inf  = torch.tensor(float('inf'),  device=D.device, dtype=D.dtype)
+    ninf = torch.tensor(float('-inf'), device=D.device, dtype=D.dtype)
+
+    # Upper bound on t from each component:
+    #   d[i] > 0  →  x0[i] + t*d[i] <= hi[i]  →  t <= (hi[i]-x0[i])/d[i]
+    #   d[i] < 0  →  x0[i] + t*d[i] >= lo[i]  →  t <= (lo[i]-x0[i])/d[i]
+    t_max_hi = torch.where(pos, (hi - x0).unsqueeze(0) / D, inf)   # (k, d)
+    t_max_lo = torch.where(neg, (lo - x0).unsqueeze(0) / D, inf)   # (k, d)
+    t_max = torch.minimum(
+        torch.min(t_max_hi, dim=1).values,
+        torch.min(t_max_lo, dim=1).values,
+    )  # (k,)
+
+    # Lower bound on t from each component:
+    #   d[i] > 0  →  x0[i] + t*d[i] >= lo[i]  →  t >= (lo[i]-x0[i])/d[i]
+    #   d[i] < 0  →  x0[i] + t*d[i] <= hi[i]  →  t >= (hi[i]-x0[i])/d[i]
+    t_min_lo = torch.where(pos, (lo - x0).unsqueeze(0) / D, ninf)  # (k, d)
+    t_min_hi = torch.where(neg, (hi - x0).unsqueeze(0) / D, ninf)  # (k, d)
+    t_min = torch.maximum(
+        torch.max(t_min_lo, dim=1).values,
+        torch.max(t_min_hi, dim=1).values,
+    )  # (k,)
+
+    mask = t_min < t_max   # (k,) bool: valid lines
+    t_min = t_min[mask]
+    t_max = t_max[mask]
+    Dm = D[mask]
+
+    x_left  = x0.unsqueeze(0) + t_min.unsqueeze(1) * Dm   # (num_valid, d)
+    x_right = x0.unsqueeze(0) + t_max.unsqueeze(1) * Dm   # (num_valid, d)
+
+    return x_left, x_right, t_min, t_max, mask
+
+
 class LineBO:
     """
     Line-based Bayesian Optimization for simplex-constrained problems.
@@ -349,17 +416,24 @@ class LineBO:
 
         assert abs(x_tell.sum().item() - 1.0) < 1e-12, f"x_tell must sum to 1, got {x_tell.sum().item()}"
 
+        # Choose the segment function: clip to zoomed bounds when provided,
+        # otherwise clip to the full simplex boundary (xi >= 0).
+        def _segments(x0, D):
+            if bounds is not None:
+                return batch_line_bounds_segments(x0, D, bounds)
+            return batch_line_simplex_segments(x0, D)
+
         # Lines from x_tell through random simplex points, extended to the boundary — guarantees valid segments.
         directions = directions_through_simplex_points(
             x_tell, self.num_lines, device=self.device, dtype=self.dtype
         )
-        x_left, x_right, t_min, t_max, valid_mask = batch_line_simplex_segments(x_tell, directions)
+        x_left, x_right, t_min, t_max, valid_mask = _segments(x_tell, directions)
 
         # If we got fewer than num_lines (rare: many random points coincided with x_tell), refill with more through-simplex then canonical.
         if x_left.shape[0] < self.num_lines:
             need = self.num_lines - x_left.shape[0]
             extra = directions_through_simplex_points(x_tell, need, device=self.device, dtype=self.dtype)
-            x_left_e, x_right_e, t_min_e, t_max_e, _ = batch_line_simplex_segments(x_tell, extra)
+            x_left_e, x_right_e, t_min_e, t_max_e, _ = _segments(x_tell, extra)
             if x_left_e.shape[0] > 0:
                 x_left = torch.cat([x_left, x_left_e], dim=0)
                 x_right = torch.cat([x_right, x_right_e], dim=0)
@@ -367,7 +441,7 @@ class LineBO:
                 t_max = torch.cat([t_max, t_max_e], dim=0)
             if x_left.shape[0] < self.num_lines:
                 canon = canonical_zero_sum_directions(self.d, device=self.device, dtype=self.dtype)
-                x_left_c, x_right_c, t_min_c, t_max_c, _ = batch_line_simplex_segments(x_tell, canon)
+                x_left_c, x_right_c, t_min_c, t_max_c, _ = _segments(x_tell, canon)
                 if x_left_c.shape[0] > 0:
                     n_take = min(self.num_lines - x_left.shape[0], x_left_c.shape[0])
                     x_left = torch.cat([x_left, x_left_c[:n_take]], dim=0)

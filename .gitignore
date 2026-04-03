@@ -29,6 +29,7 @@ sql/*.db
 actual_runs/
 old_stuff/
 results_2000/
+test_rfs/
 
 # Large binaries
 *.pt
