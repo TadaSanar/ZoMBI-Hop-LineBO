@@ -90,6 +90,11 @@ class ZoMBIHop:
         "ucb" or "ei". Default: "ucb".
     ucb_beta : float
         UCB exploration weight. Default: 0.1.
+    nat_grad_step : float
+        Natural-gradient ascent step on the probability simplex when maximizing
+        acquisition. Default: 0.02.
+    nat_grad_max_steps : int
+        Max ascent steps per acquisition restart. Default: 50.
     device : str
         Torch device. Default: 'cuda'.
     dtype : torch.dtype
@@ -132,6 +137,8 @@ class ZoMBIHop:
                  repulsion_lambda: Optional[float] = None,
                  acquisition_type: str = "ucb",
                  ucb_beta: float = 0.1,
+                 nat_grad_step: float = 0.02,
+                 nat_grad_max_steps: int = 50,
                  device: str = 'cuda',
                  dtype: torch.dtype = torch.float64,
                  run_uuid: Optional[str] = None,
@@ -191,6 +198,8 @@ class ZoMBIHop:
             repulsion_lambda=repulsion_lambda,
             acquisition_type=acquisition_type,
             ucb_beta=ucb_beta,
+            nat_grad_step=nat_grad_step,
+            nat_grad_max_steps=nat_grad_max_steps,
             directory=checkpoint_dir,
             run_uuid=run_uuid,
             max_snapshots=effective_max_snapshots,
@@ -238,6 +247,8 @@ class ZoMBIHop:
             repulsion_lambda=self.data_handler.repulsion_lambda,
             acquisition_type=self.data_handler.acquisition_type,
             ucb_beta=self.data_handler.ucb_beta,
+            nat_grad_step=self.data_handler.nat_grad_step,
+            nat_grad_max_steps=self.data_handler.nat_grad_max_steps,
             device=str(self.device),
             dtype=self.dtype,
         )
@@ -336,6 +347,10 @@ class ZoMBIHop:
         X_expected = X_expected.to(device=self.device, dtype=self.dtype)
         X_actual = X_actual.to(device=self.device, dtype=self.dtype)
         Y = Y.to(device=self.device, dtype=self.dtype)
+
+        # Project actual measurements onto the simplex so off-simplex apparatus
+        # noise doesn't corrupt stored data, distance calculations, or needle positions.
+        X_actual = self.proj_fn(X_actual)
 
         assert X_expected.shape[1] == self.d
         assert X_actual.shape[1] == self.d

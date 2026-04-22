@@ -1,0 +1,2 @@
+"""Basic Tkinter app package."""
+

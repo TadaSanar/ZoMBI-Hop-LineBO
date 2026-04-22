@@ -3,7 +3,8 @@ GP Simplex Handler
 ==================
 
 Handles Gaussian Process fitting and candidate selection for simplex-constrained
-optimization. Uses repulsive acquisition function for smooth gradient-based exploration.
+optimization. Uses repulsive acquisition plus natural-gradient (Fisher-Rao) ascent
+on the simplex for candidate optimization.
 """
 
 import torch
@@ -15,7 +16,7 @@ from gpytorch.mlls import ExactMarginalLogLikelihood
 from torch.autograd import grad
 from typing import Literal, Optional, Tuple, Callable, List
 
-from .simplex import proj_simplex, random_simplex, random_zero_sum_directions
+from .simplex import proj_simplex, random_simplex
 from .datahandler import DataHandler
 
 class RepulsiveAcquisition(nn.Module):
@@ -136,6 +137,11 @@ class GPSimplex:
     ucb_beta : float
         Exploration weight for UCB (mean + beta * std). Only used when acquisition_type=="ucb".
         Default: 0.1.
+    nat_grad_step : float
+        Step size α for natural-gradient ascent: x ∝ x ⊙ exp(α(g − ḡ_x)).
+        Default: 0.02.
+    nat_grad_max_steps : int
+        Maximum ascent steps per restart. Default: 50.
     device : str
         Torch device.
     dtype : torch.dtype
@@ -152,6 +158,8 @@ class GPSimplex:
         repulsion_lambda: Optional[float] = None,
         acquisition_type: Literal["ucb", "ei"] = "ucb",
         ucb_beta: float = 0.1,
+        nat_grad_step: float = 0.02,
+        nat_grad_max_steps: int = 50,
         device: str = 'cuda',
         dtype: torch.dtype = torch.float64,
     ):
@@ -165,6 +173,8 @@ class GPSimplex:
         if self.acquisition_type not in ("ucb", "ei"):
             raise ValueError(f"acquisition_type must be 'ucb' or 'ei', got {acquisition_type!r}")
         self.ucb_beta = ucb_beta
+        self.nat_grad_step = nat_grad_step
+        self.nat_grad_max_steps = nat_grad_max_steps
         self.device = torch.device(device)
         self.dtype = dtype
 
@@ -392,8 +402,8 @@ class GPSimplex:
         """
         Get next candidate point to evaluate.
 
-        Uses projected gradient ascent to optimize the acquisition function
-        while staying on the simplex. If exclude_near is set, the best candidate
+        Uses natural-gradient ascent on the simplex to optimize the acquisition.
+        If exclude_near is set, the best candidate
         that is not within exclude_near_tol of exclude_near is returned (no two
         same points in a row).
 
@@ -480,7 +490,6 @@ class GPSimplex:
         selected_indices = current_unpenalized_indices[top_unpenalized_indices]
         initial_conditions = current_candidates_3d[selected_indices]  # (num_restarts, 1, d)
 
-        # Optimize using projected gradient ascent (all restarts)
         candidates, values = self._optimize_acquisition(
             acq=acq,
             bounds=bounds,
@@ -533,87 +542,90 @@ class GPSimplex:
         acq: nn.Module,
         bounds: torch.Tensor,
         initial_conditions: torch.Tensor,
-        step_size: float = 0.05,
-        max_steps: int = 50,
+        nat_grad_step: Optional[float] = None,
+        nat_grad_max_steps: Optional[int] = None,
+        **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Optimize acquisition using projected gradient ascent (all restarts).
+        Natural-gradient ascent on the simplex (all restarts).
 
-        Parameters
-        ----------
-        acq : nn.Module
-            Acquisition function.
-        bounds : torch.Tensor
-            Search bounds (2, d).
-        initial_conditions : torch.Tensor
-            Initial points (num_restarts, 1, d).
-        step_size : float
-            Gradient ascent step size.
-        max_steps : int
-            Maximum optimization steps.
+        Update: g = ∇acq(x), ḡ = Σᵢ xᵢ gᵢ, then x ← normalize(x ⊙ exp(α(g − ḡ))),
+        clamp to box bounds, renormalize. Matches Method D (Fisher-Rao) used
+        previously in NaturalGradGPSimplex.
 
-        Returns
-        -------
-        tuple
-            (candidates, values): candidates (R, d), values (R,) for all successful restarts.
+        For backward compatibility, ``step_size`` and ``max_steps`` kwargs are
+        accepted as aliases for ``nat_grad_step`` and ``nat_grad_max_steps`` when
+        those are omitted.
         """
-        num_restarts = initial_conditions.shape[0]
+        if "step_size" in kwargs:
+            ss = kwargs.pop("step_size")
+            if nat_grad_step is None:
+                nat_grad_step = ss
+        if "max_steps" in kwargs:
+            ms = kwargs.pop("max_steps")
+            if nat_grad_max_steps is None:
+                nat_grad_max_steps = ms
+        if kwargs:
+            raise TypeError(f"_optimize_acquisition got unexpected keyword arguments: {set(kwargs)}")
+
+        step = self.nat_grad_step if nat_grad_step is None else float(nat_grad_step)
+        n_steps = self.nat_grad_max_steps if nat_grad_max_steps is None else int(nat_grad_max_steps)
+
+        lo = bounds[0].to(device=self.device, dtype=self.dtype)
+        hi = bounds[1].to(device=self.device, dtype=self.dtype)
         d = initial_conditions.shape[-1]
         candidates_list: List[torch.Tensor] = []
         values_list: List[torch.Tensor] = []
 
-        for r in range(num_restarts):
-            x = initial_conditions[r].clone()  # (1, d)
+        for r in range(initial_conditions.shape[0]):
+            x_raw = initial_conditions[r]
+            x = x_raw.reshape(d).clone().to(device=self.device, dtype=self.dtype)
+            x = self.proj_fn(x.unsqueeze(0)).squeeze(0)
 
-            # Ensure shape (1, 1, d) for acquisition
-            if x.dim() == 2:
-                x = x.unsqueeze(1)
-
-            # Project initial point
-            x = self.proj_fn(x)
-
-            for step in range(max_steps):
+            for _ in range(n_steps):
                 x = x.detach().requires_grad_(True)
+                x_in = x.unsqueeze(0).unsqueeze(0)
 
                 try:
-                    val = acq(x)
-
-                    # Gradient ascent
-                    grad_x = torch.autograd.grad(val.sum(), x)[0]
-
-                    with torch.no_grad():
-                        x = x + step_size * grad_x
-
-                        # Apply box constraints
-                        lower, upper = bounds[0], bounds[1]
-                        x = torch.max(torch.min(x, upper), lower)
-
-                        # Project back to simplex
-                        x = self.proj_fn(x)
-
+                    val = acq(x_in)
+                    g = torch.autograd.grad(val.sum(), x)[0]
                 except RuntimeError:
-                    break  # Skip this restart on error
+                    break
 
-            # Evaluate final value
-            with torch.no_grad():
-                x = x.detach()
-                try:
-                    final_val = acq(x)
-                except RuntimeError:
-                    continue  # Skip on error
+                with torch.no_grad():
+                    x_det = x.detach()
+                    g_bar = (x_det * g).sum()
+                    shift = step * (g - g_bar)
+                    shift = torch.clamp(shift, -10.0, 10.0)
+                    x_new = x_det * torch.exp(shift)
+                    s = x_new.sum()
+                    if s < 1e-12:
+                        break
+                    x_new = x_new / s
+                    x_new = torch.clamp(x_new, lo, hi)
+                    s2 = x_new.sum()
+                    if s2 < 1e-12:
+                        break
+                    x = x_new / s2
 
-            candidates_list.append(x.squeeze(-2).squeeze(0))  # (d,)
+            x = x.detach()
+            x_in = x.unsqueeze(0).unsqueeze(0)
+            try:
+                with torch.no_grad():
+                    final_val = acq(x_in)
+            except RuntimeError:
+                continue
+
+            candidates_list.append(x)
             values_list.append(final_val.squeeze())
 
-        if len(candidates_list) == 0:
+        if not candidates_list:
             return (
                 torch.empty(0, d, device=bounds.device, dtype=bounds.dtype),
                 torch.empty(0, device=bounds.device, dtype=bounds.dtype),
             )
 
-        candidates = torch.stack(candidates_list, dim=0)  # (R, d)
-        values = torch.stack(values_list, dim=0)  # (R,)
-        return candidates, values
+        return torch.stack(candidates_list, dim=0), torch.stack(values_list, dim=0)
 
     def determine_penalty_radius(
         self,

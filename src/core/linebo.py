@@ -17,10 +17,12 @@ import torch
 import torch.nn as nn
 from typing import Tuple, Optional
 
-from ..utils.simplex import sample_simplex
+from ..utils.simplex import random_simplex, random_simplex_direction
 
-# Resampling limits (worst-case caps)
-ZERO_SUM_DIR_MAX_RESAMPLE = 100   # max resamples for zero-norm rows in zero_sum_dirs (default: 100)
+# Backward-compatible aliases
+random_zero_sum_directions = random_simplex_direction
+zero_sum_dirs = random_simplex_direction
+
 SAMPLER_MAX_EXTRA_ATTEMPTS = 50  # max extra direction batches in LineBO.sampler when valid lines < num_lines (default: 50)
 MIN_DIRECTION_NORM = 1e-10        # directions with smaller norm (P ≈ x_tell) are dropped when using through-simplex sampling
 
@@ -54,7 +56,9 @@ def directions_through_simplex_points(x0: torch.Tensor, k: int, device=None, dty
     x0 = x0.to(device=device, dtype=dtype)
     # Sample more than k points so we can drop any that equal x0 (or are too close)
     n_sample = max(k * 2, k + 10)
-    P = sample_simplex(n_sample, d, device=device, dtype=dtype)  # (n_sample, d)
+    zeros = torch.zeros(d, device=device, dtype=dtype)
+    ones = torch.ones(d, device=device, dtype=dtype)
+    P = random_simplex(n_sample, zeros, ones, S=1.0, device=device, torch_dtype=dtype)  # (n_sample, d)
     D = P - x0.unsqueeze(0)  # (n_sample, d)
     norms = D.norm(dim=1, keepdim=True)
     keep = (norms.squeeze(1) > MIN_DIRECTION_NORM)
@@ -64,7 +68,7 @@ def directions_through_simplex_points(x0: torch.Tensor, k: int, device=None, dty
     if D.shape[0] == 0:
         return torch.zeros(0, d, device=device, dtype=dtype)
     # Resample once to try to reach k
-    P2 = sample_simplex(n_sample, d, device=device, dtype=dtype)
+    P2 = random_simplex(n_sample, zeros, ones, S=1.0, device=device, torch_dtype=dtype)
     D2 = P2 - x0.unsqueeze(0)
     norms2 = D2.norm(dim=1, keepdim=True)
     keep2 = (norms2.squeeze(1) > MIN_DIRECTION_NORM)
@@ -72,70 +76,6 @@ def directions_through_simplex_points(x0: torch.Tensor, k: int, device=None, dty
     D = torch.cat([D, D2], dim=0)
     return D[:k] if D.shape[0] >= k else D
 
-
-def canonical_zero_sum_directions(d: int, device=None, dtype=torch.float64) -> torch.Tensor:
-    """
-    Return zero-sum directions that are guaranteed to yield valid simplex segments
-    from any point on the simplex (at least d-1 valid at a vertex, up to d*(d-1)/2 in interior).
-    Directions are e_i - e_j (normalized) for i < j.
-    """
-    out = []
-    for i in range(d):
-        for j in range(i + 1, d):
-            direction = torch.zeros(d, device=device, dtype=dtype)
-            direction[i] = 1.0
-            direction[j] = -1.0
-            n = direction.norm()
-            if n > 0:
-                direction = direction / n
-            out.append(direction)
-    if not out:
-        return torch.zeros(0, d, device=device, dtype=dtype)
-    return torch.stack(out, dim=0)
-
-
-def zero_sum_dirs(k: int, d: int, device=None, dtype=torch.float64, seed=None) -> torch.Tensor:
-    """
-    Sample k vectors of dimension d with zero sum and unit norm.
-
-    Parameters
-    ----------
-    k : int
-        Number of vectors to sample.
-    d : int
-        Dimensionality of each vector.
-    device : str, optional
-        Torch device.
-    dtype : torch.dtype
-        Data type for the tensors.
-    seed : int, optional
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    torch.Tensor
-        (k, d) tensor of zero-sum, unit-norm vectors.
-    """
-    if seed is not None:
-        torch.manual_seed(seed)
-    # Raw directions: (k, d)
-    v = torch.randn(k, d, device=device, dtype=dtype)
-    # Center each row so sum over d is 0 (zero-sum constraint)
-    v -= v.mean(dim=1, keepdim=True)  # v: (k, d)
-    # Row-wise L2 norm for normalization: (k, 1)
-    n = v.norm(dim=1, keepdim=True)
-    # Resample any rows that ended up with zero norm (degenerate); cap iterations to avoid worst-case infinite loop
-    mask = (n.squeeze() == 0)  # (k,) bool
-    for _ in range(ZERO_SUM_DIR_MAX_RESAMPLE):
-        if not mask.any():
-            break
-        r = torch.randn(mask.sum().item(), d, device=device, dtype=dtype)  # (num_zero, d)
-        r -= r.mean(dim=1, keepdim=True)
-        v[mask] = r
-        n[mask] = v[mask].norm(dim=1, keepdim=True)
-        mask = (n.squeeze() == 0)
-    # Return unit-norm directions: (k, d) [if any row still zero-norm after cap, divide may produce inf/nan]
-    return v / n
 
 
 def line_simplex_segment(x0: torch.Tensor, d: torch.Tensor) -> Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
@@ -429,7 +369,7 @@ class LineBO:
         )
         x_left, x_right, t_min, t_max, valid_mask = _segments(x_tell, directions)
 
-        # If we got fewer than num_lines (rare: many random points coincided with x_tell), refill with more through-simplex then canonical.
+        # If we got fewer than num_lines, refill with more through-simplex directions.
         if x_left.shape[0] < self.num_lines:
             need = self.num_lines - x_left.shape[0]
             extra = directions_through_simplex_points(x_tell, need, device=self.device, dtype=self.dtype)
@@ -439,15 +379,6 @@ class LineBO:
                 x_right = torch.cat([x_right, x_right_e], dim=0)
                 t_min = torch.cat([t_min, t_min_e], dim=0)
                 t_max = torch.cat([t_max, t_max_e], dim=0)
-            if x_left.shape[0] < self.num_lines:
-                canon = canonical_zero_sum_directions(self.d, device=self.device, dtype=self.dtype)
-                x_left_c, x_right_c, t_min_c, t_max_c, _ = _segments(x_tell, canon)
-                if x_left_c.shape[0] > 0:
-                    n_take = min(self.num_lines - x_left.shape[0], x_left_c.shape[0])
-                    x_left = torch.cat([x_left, x_left_c[:n_take]], dim=0)
-                    x_right = torch.cat([x_right, x_right_c[:n_take]], dim=0)
-                    t_min = torch.cat([t_min, t_min_c[:n_take]], dim=0)
-                    t_max = torch.cat([t_max, t_max_c[:n_take]], dim=0)
 
         # Trim to exactly num_lines if we have more
         if x_left.shape[0] > self.num_lines:

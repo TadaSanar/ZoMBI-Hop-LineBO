@@ -37,7 +37,8 @@ class DataHandler:
     penalization_threshold, penalty_num_directions, penalty_max_radius,
     penalty_radius_step, convergence_pi_threshold, input_noise_threshold_mult,
     output_noise_threshold_mult, n_consecutive_converged, max_gp_points,
-    repulsion_lambda, acquisition_type, ucb_beta : control variables
+    repulsion_lambda, acquisition_type, ucb_beta, nat_grad_step,
+    nat_grad_max_steps : control variables
     directory : str, optional
         Base directory for snapshots. If None, no saving occurs.
     run_uuid : str, optional
@@ -74,6 +75,8 @@ class DataHandler:
         repulsion_lambda: Optional[float] = None,
         acquisition_type: str = "ucb",
         ucb_beta: float = 0.1,
+        nat_grad_step: float = 0.02,
+        nat_grad_max_steps: int = 50,
         # --- Storage settings ---
         directory: Optional[str] = None,
         run_uuid: Optional[str] = None,
@@ -108,6 +111,8 @@ class DataHandler:
             repulsion_lambda = cfg.repulsion_lambda
             acquisition_type = getattr(cfg, 'acquisition_type', acquisition_type)
             ucb_beta = getattr(cfg, 'ucb_beta', ucb_beta)
+            nat_grad_step = getattr(cfg, 'nat_grad_step', nat_grad_step)
+            nat_grad_max_steps = getattr(cfg, 'nat_grad_max_steps', nat_grad_max_steps)
 
         # --- Store all control variables as plain attributes ---
         self.max_zooms = max_zooms
@@ -127,6 +132,8 @@ class DataHandler:
         self.repulsion_lambda = repulsion_lambda
         self.acquisition_type = acquisition_type
         self.ucb_beta = ucb_beta
+        self.nat_grad_step = nat_grad_step
+        self.nat_grad_max_steps = nat_grad_max_steps
 
         # Compute settings
         self.device = torch.device(device)
@@ -255,6 +262,8 @@ class DataHandler:
             'repulsion_lambda': self.repulsion_lambda,
             'acquisition_type': self.acquisition_type,
             'ucb_beta': self.ucb_beta,
+            'nat_grad_step': self.nat_grad_step,
+            'nat_grad_max_steps': self.nat_grad_max_steps,
             'device': str(self.device),
             'dtype': str(self.dtype),
         }
@@ -393,6 +402,8 @@ class DataHandler:
             self.repulsion_lambda = cfg.get('repulsion_lambda', self.repulsion_lambda)
             self.acquisition_type = cfg.get('acquisition_type', self.acquisition_type)
             self.ucb_beta = cfg.get('ucb_beta', self.ucb_beta)
+            self.nat_grad_step = cfg.get('nat_grad_step', self.nat_grad_step)
+            self.nat_grad_max_steps = cfg.get('nat_grad_max_steps', self.nat_grad_max_steps)
 
         # Try new snapshot format first (latest.txt -> snapshots/)
         latest_path = self.run_dir / 'latest.txt'
@@ -654,9 +665,22 @@ class DataHandler:
     # =========================================================================
 
     def get_gp_data(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (X, Y) of the top max_gp_points unpenalized points for GP fitting."""
-        X = self.X_all_actual[self._penalty_mask]
-        Y = self.Y_all[self._penalty_mask]
+        """Return (X, Y) for GP fitting.
+
+        Prefers the top ``max_gp_points`` unpenalized points.  Falls back to
+        ALL stored data when every point is penalized (e.g. at the start of a
+        new activation after a large penalty radius has absorbed the previous
+        activation's observations).  The repulsive acquisition already steers
+        the optimizer away from needles, so training on all data is safe.
+        """
+        mask = self._penalty_mask
+        if mask.any():
+            X = self.X_all_actual[mask]
+            Y = self.Y_all[mask]
+        else:
+            # All points penalized — fall back to full dataset
+            X = self.X_all_actual
+            Y = self.Y_all
         sorted_idx = torch.argsort(Y.squeeze(), descending=True)
         n = min(self.max_gp_points, len(sorted_idx))
         top_idx = sorted_idx[:n]

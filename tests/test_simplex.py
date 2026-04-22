@@ -1,8 +1,6 @@
 """Tests for simplex utilities."""
 
 import torch
-import pytest
-import numpy as np
 import sys
 from pathlib import Path
 
@@ -10,64 +8,31 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "utils"))
 
 from simplex import (
-    sample_simplex,
-    project_to_simplex,
+    random_simplex,
     is_on_simplex,
     simplex_distance,
 )
 
 
-class TestSampleSimplex:
-    """Tests for simplex sampling."""
+class TestRandomSimplex:
+    """Tests for bounded simplex CFS sampler."""
 
-    def test_samples_on_simplex(self):
-        """Samples should lie on the simplex."""
-        samples = sample_simplex(100, 5, device='cpu')
-
-        # Check sum to 1
-        sums = samples.sum(dim=1)
-        assert torch.allclose(sums, torch.ones(100, dtype=samples.dtype), atol=1e-6)
-
-        # Check non-negative
+    def test_samples_on_full_simplex(self):
+        d = 5
+        lo = torch.zeros(d, dtype=torch.float64)
+        hi = torch.ones(d, dtype=torch.float64)
+        samples = random_simplex(200, lo, hi, device='cpu', torch_dtype=torch.float64)
+        assert samples.shape == (200, d)
+        assert torch.allclose(samples.sum(dim=1), torch.ones(200, dtype=samples.dtype), atol=1e-9)
         assert (samples >= -1e-10).all()
 
-    def test_correct_shape(self):
-        """Should return correct shape."""
-        samples = sample_simplex(50, 7, device='cpu')
-        assert samples.shape == (50, 7)
-
-    def test_different_dimensions(self):
-        """Should work for various dimensions."""
-        for d in [2, 3, 5, 10]:
-            samples = sample_simplex(10, d, device='cpu')
-            assert samples.shape == (10, d)
-            assert torch.allclose(samples.sum(dim=1), torch.ones(10, dtype=samples.dtype), atol=1e-6)
-
-
-class TestProjectToSimplex:
-    """Tests for simplex projection."""
-
-    def test_already_on_simplex(self):
-        """Points on simplex should not change much."""
-        x = torch.tensor([0.2, 0.3, 0.5])
-        projected = project_to_simplex(x)
-        assert torch.allclose(x, projected, atol=1e-6)
-
-    def test_projection_on_simplex(self):
-        """Projected points should be on simplex."""
-        x = torch.randn(10, 5)
-        projected = project_to_simplex(x)
-
-        assert torch.allclose(projected.sum(dim=1), torch.ones(10), atol=1e-6)
-        assert (projected >= -1e-10).all()
-
-    def test_negative_input(self):
-        """Should handle negative inputs."""
-        x = torch.tensor([-1.0, 2.0, 0.5])
-        projected = project_to_simplex(x)
-
-        assert torch.allclose(projected.sum(), torch.tensor(1.0), atol=1e-6)
-        assert (projected >= -1e-10).all()
+    def test_samples_respect_bounds(self):
+        lo = torch.tensor([0.05, 0.10, 0.05, 0.10], dtype=torch.float64)
+        hi = torch.tensor([0.60, 0.70, 0.55, 0.70], dtype=torch.float64)
+        samples = random_simplex(300, lo, hi, device='cpu', torch_dtype=torch.float64)
+        assert (samples >= lo.unsqueeze(0) - 1e-10).all()
+        assert (samples <= hi.unsqueeze(0) + 1e-10).all()
+        assert torch.allclose(samples.sum(dim=1), torch.ones(300, dtype=samples.dtype), atol=1e-9)
 
 
 class TestIsOnSimplex:

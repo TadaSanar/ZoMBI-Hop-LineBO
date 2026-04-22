@@ -7,7 +7,7 @@ Each ZoMBI-Hop iteration shows three sequential ternary frames:
   3. LineBO Line     – 24 evenly-spaced points on the chosen line + ZoMBI star
 
 The four ascent methods compared side-by-side:
-  A) Softmax reparametrisation  – unconstrained θ, x = softmax(θ)
+  A) Softmax reparametrisation  - unconstrained θ, x = softmax(θ)
   B) Riemannian gradient        – mean-centred (zero-sum) Euclidean gradient
   C) Riemannian + log-barrier   – Riemannian gradient + μ·Σlog(xᵢ−lᵢ)+log(hᵢ−xᵢ)
   D) Natural gradient / Exp-map – multiplicative weights / Fisher-Rao geodesic

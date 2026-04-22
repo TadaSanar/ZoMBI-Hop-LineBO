@@ -17,8 +17,10 @@ Extension of run_zombi_test.py with three changes:
                             nearest needle across all benchmark runs
      (b) dup_frac         — fraction of sampled points that are near-duplicate
                             (wasted) evaluations
-     (c) penalty_max_radius — the tuned value of ``penalty_max_radius``
-                              (explicitly prefer smaller exploration radii)
+     (c) total_penalty_ball_volume — sum of Euclidean d-ball volumes
+         ``Σ_i Vol(B_d(r_i))`` for each needle's penalty radius ``r_i`` (same
+         metric as ``DataHandler`` penalty balls). ``penalty_max_radius`` remains
+         a *tuned hyperparameter*, not an objective.
 
 3. **Noisy objectives preserved.**
    The same four (input_noise, output_noise) combinations from V1 are swept
@@ -29,10 +31,10 @@ Usage
     # Single benchmark run (no MOBO):
     python scripts/run_zombi_test_v2.py
 
-    # MOBO hyperparameter tuning:
+    # MOBO hyperparameter tuning (e.g. 4 configs per round, 4 parallel processes):
     python scripts/run_zombi_test_v2.py --mobo \\
         --regions max_min_regions.json \\
-        --mobo-init 8 --mobo-iters 20 --parallel 4
+        --mobo-init 8 --mobo-iters 20 --batch 4 --workers 4
 
     # MOBO without a regions file (falls back to V1 point distance):
     python scripts/run_zombi_test_v2.py --mobo
@@ -92,6 +94,35 @@ from scripts.run_zombi_test import (
 from src.utils.simplex import random_simplex
 
 _D = 3
+
+# MOBO / needle-count fallbacks (match region NEEDLE_PENALTY scale order of magnitude)
+_NEEDLE_VOL_PENALTY = 1e6
+
+
+def total_penalty_euclidean_ball_volume(radii: np.ndarray, d: int) -> float:
+    """
+    Sum of Lebesgue volumes of Euclidean d-balls with radii ``radii``.
+
+    Uses the same distance geometry as ``DataHandler`` penalty regions
+    (Euclidean norm in R^d). Volume of one ball: π^(d/2) r^d / Γ(d/2 + 1).
+    """
+    radii = np.asarray(radii, dtype=np.float64).ravel()
+    if radii.size == 0:
+        return 0.0
+    from math import gamma, pi
+
+    coeff = (pi ** (d / 2)) / gamma(d / 2 + 1)
+    return float(np.sum(coeff * (radii**d)))
+
+
+def _resolve_device(device: Optional[str]) -> str:
+    """Default to CUDA when available; fall back to CPU."""
+    if device is None:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        warnings.warn("CUDA requested but not available; using CPU.", stacklevel=2)
+        return "cpu"
+    return device
 
 
 # =============================================================================
@@ -454,6 +485,7 @@ def run_zombi_on_objective_v2(
     NEEDLE_PENALTY = 10.0
     if n_needles < L:
         region_dist = NEEDLE_PENALTY
+        total_penalty_ball_volume = float(_NEEDLE_VOL_PENALTY)
         if verbose:
             print(f"[{name}] PENALTY: only {n_needles} needle(s) found, need {L}")
     else:
@@ -466,6 +498,10 @@ def run_zombi_on_objective_v2(
             obj_fn=fn,          # original un-negated fn for level-set membership
             mode=mode,
             epsilon_frac=epsilon_frac,
+        )
+        _nr, radii_t = optimizer.data_handler.get_needles_and_penalty_radii()
+        total_penalty_ball_volume = total_penalty_euclidean_ball_volume(
+            radii_t.cpu().numpy(), _D
         )
 
     # V1 fallback distance kept for reference (always uses original fn)
@@ -483,6 +519,7 @@ def run_zombi_on_objective_v2(
         print(f"[{name}] {n_total} total pts  |  {n_redundant} redundant")
         print(f"[{name}] {n_needles}/{L} needle(s)  |  region_dist={region_dist:.5f}"
               f"  v1_dist={v1_dist:.5f}")
+        print(f"[{name}] total_penalty_ball_volume (Σ Vol(B_d(r_i))) = {total_penalty_ball_volume:.6e}")
 
     return {
         "name":                         name,
@@ -505,6 +542,7 @@ def run_zombi_on_objective_v2(
         "n_redundant":                  n_redundant,
         "input_noise":                  input_noise,
         "output_noise":                 output_noise,
+        "total_penalty_ball_volume":    total_penalty_ball_volume,
     }
 
 
@@ -541,7 +579,7 @@ def run_zombi_test_v2(
     rf_global_samples: int = 10_000_000,
     rf_cache_dir: Optional[str] = RF_CACHE_DIR,
     csv_path: str = CSV_PEROVSKITE_PATH,
-    device: str = "cpu",
+    device: Optional[str] = None,
     dtype: torch.dtype = torch.float64,
     verbose: bool = True,
     show_plot: bool = False,
@@ -557,6 +595,7 @@ def run_zombi_test_v2(
     - Region distance uses ``epsilon_frac=0.2`` (overrides stored value).
     - Runs with ``n_needles < L`` receive ``avg_region_dist = 10`` (penalty).
     """
+    device = _resolve_device(device)
     regions_data = load_regions(regions_path)
     if regions_data is not None:
         print(f"  Loaded regions from: {regions_path}  "
@@ -701,7 +740,7 @@ def _evaluate_config_v2(
 
     Returns
     -------
-    (avg_region_dist, dup_frac, penalty_max_radius)
+    (avg_region_dist, dup_frac, mean_total_penalty_ball_volume)
     All three are to be minimised. If no sub-run has finite ``avg_region_dist``,
     the first scalar is ``100.0`` (total-evaluation failure fallback).
     """
@@ -721,39 +760,85 @@ def _evaluate_config_v2(
     ]
     avg_dup = float(np.mean(dup_fracs)) if dup_fracs else 1.0
 
-    pmr = float(config.get("penalty_max_radius", merged.get("penalty_max_radius", 0.3)))
+    vols = [
+        float(v)
+        for r in results
+        for v in [r.get("total_penalty_ball_volume")]
+        if v is not None and np.isfinite(v)
+    ]
+    avg_vol = float(np.mean(vols)) if vols else float(_NEEDLE_VOL_PENALTY)
 
-    return avg_dist, avg_dup, pmr
-
-
-def _mobo_worker_v2(task: Tuple[Dict, Dict, int]) -> Tuple[float, float, float]:
-    """Picklable top-level worker for parallel V2 MOBO evaluation."""
-    config, fixed_kw, threads_per_worker = task
-    os.environ["OMP_NUM_THREADS"]      = str(threads_per_worker)
-    os.environ["MKL_NUM_THREADS"]      = str(threads_per_worker)
-    os.environ["OPENBLAS_NUM_THREADS"] = str(threads_per_worker)
-    os.environ["BLAS_NUM_THREADS"]     = str(threads_per_worker)
-    torch.set_num_threads(threads_per_worker)
-    return _evaluate_config_v2(config, fixed_kw=fixed_kw)
+    return avg_dist, avg_dup, avg_vol
 
 
-def _run_batch_parallel_v2(
+def _run_batch_sequential_v2(
     configs: List[Dict],
     x_unit_batch: List[np.ndarray],
     fixed_kw: Dict,
-    n_parallel: int,
-    threads_per_worker: int,
     label: str,
 ) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[Dict]]:
-    """Evaluate a batch of configs in parallel; returns 3-D Y tensors."""
+    """Evaluate each hyperparameter config one after another (GPU ZoMBI; no process pool)."""
+    dev = fixed_kw.get("device", "cpu")
+    print(f"\n  Evaluating {len(configs)} config(s) sequentially on {dev} …")
+
+    new_X: List[torch.Tensor] = []
+    new_Y: List[torch.Tensor] = []
+    for i, cfg in enumerate(configs):
+        try:
+            dist, dup, vol = _evaluate_config_v2(cfg, fixed_kw=fixed_kw)
+        except Exception as exc:
+            warnings.warn(f"  [{label} {i+1}/{len(configs)}] failed: {exc}", stacklevel=2)
+            dist, dup, vol = (1.0, 1.0, float(_NEEDLE_VOL_PENALTY))
+        print(
+            f"  [{label} {i+1}/{len(configs)}] "
+            f"region_dist={dist:.5f}  dup_frac={dup:.4f}  "
+            f"total_penalty_vol={vol:.6e}  config={cfg}",
+        )
+        new_X.append(torch.tensor(x_unit_batch[i], dtype=torch.float64))
+        new_Y.append(torch.tensor([dist, dup, vol], dtype=torch.float64))
+        if dev == "cuda" and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return new_X, new_Y, configs
+
+
+def _mobo_worker_v2(task: Tuple[Dict, Dict]) -> Tuple[float, float, float]:
+    """Picklable worker: evaluate one MOBO hyperparameter config (full V2 benchmark)."""
+    config, fixed_kw = task
+    return _evaluate_config_v2(config, fixed_kw=fixed_kw)
+
+
+def _run_batch_mobo_v2(
+    configs: List[Dict],
+    x_unit_batch: List[np.ndarray],
+    fixed_kw: Dict,
+    label: str,
+    mobo_workers: int,
+) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[Dict]]:
+    """
+    Evaluate a batch of hyperparameter configs.
+
+    * ``mobo_workers == 1``: sequential (single process; simplest GPU use).
+    * ``mobo_workers > 1``: ``ProcessPoolExecutor`` with up to ``mobo_workers``
+      processes (default 4). Each run loads its own ZoMBI stack; use ``--device cpu``
+      if multiple CUDA processes exhaust GPU memory.
+    """
+    mobo_workers = max(1, int(mobo_workers))
+    ncfg = len(configs)
+    if mobo_workers == 1 or ncfg == 1:
+        return _run_batch_sequential_v2(configs, x_unit_batch, fixed_kw, label)
+
     import concurrent.futures
 
-    tasks = [(cfg, fixed_kw, threads_per_worker) for cfg in configs]
-    print(f"\n  Submitting {len(tasks)} workers (parallelism={n_parallel}, "
-          f"threads/worker={threads_per_worker}) …")
+    workers = min(mobo_workers, ncfg)
+    tasks = [(cfg, fixed_kw) for cfg in configs]
+    print(
+        f"\n  Evaluating {ncfg} config(s) with ProcessPoolExecutor "
+        f"(max_workers={workers}) …",
+    )
 
     results_xyz: List[Optional[Tuple[float, float, float]]] = [None] * len(tasks)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=n_parallel) as pool:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_mobo_worker_v2, t): i for i, t in enumerate(tasks)}
         for fut in concurrent.futures.as_completed(futures):
             idx = futures[fut]
@@ -761,15 +846,19 @@ def _run_batch_parallel_v2(
                 results_xyz[idx] = fut.result()
             except Exception as exc:
                 warnings.warn(f"  [{label} worker {idx}] failed: {exc}", stacklevel=2)
-                results_xyz[idx] = (1.0, 1.0, 0.3)  # pessimistic fallback
+                results_xyz[idx] = (1.0, 1.0, float(_NEEDLE_VOL_PENALTY))
 
-    new_X, new_Y = [], []
-    for i, (dist, dup, pmr) in enumerate(results_xyz):
-        print(f"  [{label} {i+1}/{len(tasks)}] "
-              f"region_dist={dist:.5f}  dup_frac={dup:.4f}  "
-              f"penalty_max_radius={pmr:.4f}  config={configs[i]}")
+    new_X: List[torch.Tensor] = []
+    new_Y: List[torch.Tensor] = []
+    for i, triple in enumerate(results_xyz):
+        dist, dup, vol = triple  # type: ignore[misc]
+        print(
+            f"  [{label} {i+1}/{len(tasks)}] "
+            f"region_dist={dist:.5f}  dup_frac={dup:.4f}  "
+            f"total_penalty_vol={vol:.6e}  config={configs[i]}",
+        )
         new_X.append(torch.tensor(x_unit_batch[i], dtype=torch.float64))
-        new_Y.append(torch.tensor([dist, dup, pmr], dtype=torch.float64))
+        new_Y.append(torch.tensor([dist, dup, vol], dtype=torch.float64))
 
     return new_X, new_Y, configs
 
@@ -784,7 +873,7 @@ def mobo_tune_zombi_v2(
     n_initial: int = 8,
     n_mobo_iterations: int = 20,
     n_parallel: int = 4,
-    threads_per_worker: int = 2,
+    mobo_workers: int = 4,
     param_bounds: Optional[Dict[str, Tuple[float, float]]] = None,
     log_scale_params: Optional[set] = None,
     integer_params: Optional[set] = None,
@@ -805,7 +894,7 @@ def mobo_tune_zombi_v2(
     repulsion_lambda: Optional[float] = None,
     rf_global_samples: int = 10_000_000,
     rf_cache_dir: Optional[str] = RF_CACHE_DIR,
-    device: str = "cpu",
+    device: Optional[str] = None,
     dtype: torch.dtype = torch.float64,
     verbose_zombi: bool = False,
     results_json: str = "hyperparam_results_v2.json",
@@ -815,26 +904,36 @@ def mobo_tune_zombi_v2(
     3-objective MOBO tuning of ZoMBI-Hop hyperparameters.
 
     Minimises simultaneously:
-      1. avg_region_dist      — region-based distance (0 if needle inside region)
-      2. dup_frac             — fraction of wasted/duplicate evaluations
-      3. penalty_max_radius   — the tuned value of penalty_max_radius itself
+      1. avg_region_dist — region-based distance (0 if needle inside region)
+      2. dup_frac — fraction of wasted/duplicate evaluations
+      3. mean total_penalty_ball_volume — mean over benchmark runs of
+         Σ_i Vol(B_d(r_i)) for needle penalty radii (Euclidean d-balls)
+
+    ``penalty_max_radius`` remains a tuned *hyperparameter* in ``config``,
+    not an objective.
 
     Uses ``qLogNoisyExpectedHypervolumeImprovement`` with one GP per objective.
-    Each MOBO round proposes ``n_parallel`` candidates in batch.
+    Each MOBO round proposes ``n_parallel`` candidate configs. They are
+    evaluated with up to ``mobo_workers`` parallel processes (default 4), or
+    sequentially if ``mobo_workers=1``.
 
     Parameters
     ----------
     regions_path : str or None
         Path to ``max_min_regions.json`` from ``interactive_maxima_selector.py``.
         If None, distance objective falls back to V1 point-based metric.
-    (all other parameters mirror ``mobo_tune_zombi`` in V1)
+    n_parallel : int
+        Batch size ``q`` for acquisition optimization (configs per round).
+    mobo_workers : int
+        Max parallel processes for evaluating those configs. Use ``1`` to force
+        sequential execution (e.g. single-GPU memory limits).
 
     Returns
     -------
     dict with keys:
         X, Y (n×3), configs, pareto_mask, pareto_configs, pareto_Y, param_names
     """
-    import concurrent.futures  # noqa: F401
+    device = _resolve_device(device)
     from botorch.models import SingleTaskGP
     from botorch.models.model_list_gp_regression import ModelListGP
     from botorch.acquisition.multi_objective.logei import (
@@ -890,15 +989,21 @@ def mobo_tune_zombi_v2(
         for k, (cfg, y_t) in enumerate(zip(configs, Y_list)):
             avg_dist = float(y_t[0])
             dup_frac = float(y_t[1])
-            pmr      = float(y_t[2])
+            vol      = float(y_t[2])
             records.append({
-                "eval_idx":           k,
-                "phase":              evaluations[k]["phase"],
-                "config":             cfg,
-                "avg_region_dist":    avg_dist,
-                "dup_frac":           dup_frac,
-                "penalty_max_radius": pmr,
-                "score": float(np.sqrt(avg_dist ** 2 + dup_frac ** 2 + pmr ** 2)),
+                "eval_idx":                    k,
+                "phase":                       evaluations[k]["phase"],
+                "config":                      cfg,
+                "avg_region_dist":             avg_dist,
+                "dup_frac":                    dup_frac,
+                "total_penalty_ball_volume":   vol,
+                "score": float(
+                    np.sqrt(
+                        avg_dist ** 2
+                        + dup_frac ** 2
+                        + np.log1p(max(vol, 0.0)) ** 2,
+                    )
+                ),
             })
         best_idx   = int(np.argmin([r["score"] for r in records]))
         best_so_far = {**records[best_idx]}
@@ -913,27 +1018,27 @@ def mobo_tune_zombi_v2(
     all_Y:       List[torch.Tensor]  = []
     all_configs: List[Dict]          = []
 
-    # Unit-cube BoTorch bounds [0,1]^d
-    bo_bounds = torch.zeros(2, d, dtype=torch.float64)
+    device_t = torch.device(device)
+
+    # Unit-cube BoTorch bounds [0,1]^d (keep MOBO on the requested device)
+    bo_bounds = torch.zeros(2, d, dtype=torch.float64, device=device_t)
     bo_bounds[1] = 1.0
 
-    # Reference point: must be strictly dominated by all observed Y (negated).
-    # avg_region_dist ∈ [0,1]  → negated ∈ [-1,0]   → ref: -1.5
-    # dup_frac        ∈ [0,1]  → negated ∈ [-1,0]   → ref: -1.5
-    # penalty_max_radius ∈ [0.05, 0.5] → negated ∈ [-0.5,-0.05] → ref: -0.6
-    ref_point = torch.tensor([-1.5, -1.5, -0.6], dtype=torch.float64)
+    # Reference point (maximization space = -Y): pessimistic vs typical ranges.
+    # Third axis: -total_penalty_ball_volume can be very negative for large volumes.
+    ref_point = torch.tensor([-100.0, -100.0, -1e12], dtype=torch.float64, device=device_t)
 
     n_total_evals = n_initial + n_mobo_iterations * n_parallel
     print("=" * 70)
-    print("MOBO V2 TUNING  (3 objectives: region_dist, dup_frac, penalty_max_radius)")
-    print(f"  {n_initial} Sobol init + {n_mobo_iterations} rounds × {n_parallel} parallel"
-          f" = {n_total_evals} total evals")
-    print(f"  {n_parallel} workers, {threads_per_worker} threads/worker")
+    print("MOBO V2 TUNING  (3 objectives: region_dist, dup_frac, total_penalty_ball_volume)")
+    print(f"  {n_initial} Sobol init + {n_mobo_iterations} rounds × {n_parallel} batch"
+          f" = {n_total_evals} total evals (mobo_workers={mobo_workers})")
     print(f"  Tunable params ({d}): {param_names}")
     if regions_path:
         print(f"  Regions file: {regions_path}")
     else:
         print("  Regions file: None  (V1 point-distance fallback)")
+    print(f"  Device: {device}")
     print("=" * 70)
 
     torch.manual_seed(seed)
@@ -955,12 +1060,15 @@ def mobo_tune_zombi_v2(
                     _unit_from_config(cfg[name], name, raw_bounds, log_params)
                     for name in param_names
                 ], dtype=np.float64)
-                all_X.append(torch.tensor(x_unit, dtype=torch.float64))
+                all_X.append(torch.tensor(x_unit, dtype=torch.float64, device=device_t))
+                third = rec.get("total_penalty_ball_volume")
+                if third is None:
+                    third = rec.get("penalty_max_radius", 0.3)
                 all_Y.append(torch.tensor([
                     rec["avg_region_dist"],
                     rec["dup_frac"],
-                    rec["penalty_max_radius"],
-                ], dtype=torch.float64))
+                    float(third),
+                ], dtype=torch.float64, device=device_t))
                 all_configs.append(cfg)
                 all_phases.append({"phase": rec["phase"]})
                 if rec["phase"] == "sobol_init":
@@ -982,16 +1090,18 @@ def mobo_tune_zombi_v2(
             continue
         batch_idx  = X_sobol[batch_start: batch_start + n_parallel]
         batch_cfgs = [
-            _config_from_unit(batch_idx[j].numpy(), param_names,
+            _config_from_unit(batch_idx[j].detach().cpu().numpy(), param_names,
                               raw_bounds, log_params, int_params)
             for j in range(len(batch_idx))
         ]
         label = f"Init {batch_start+1}-{batch_start+len(batch_idx)}/{n_initial}"
         print(f"\n{'─'*60}\n{label}")
-        new_X, new_Y, new_cfgs = _run_batch_parallel_v2(
+        new_X, new_Y, new_cfgs = _run_batch_mobo_v2(
             batch_cfgs,
-            [batch_idx[j].numpy() for j in range(len(batch_idx))],
-            fixed_kw, n_parallel, threads_per_worker, label,
+            [batch_idx[j].detach().cpu().numpy() for j in range(len(batch_idx))],
+            fixed_kw,
+            label,
+            mobo_workers,
         )
         all_X.extend(new_X)
         all_Y.extend(new_Y)
@@ -1006,8 +1116,8 @@ def mobo_tune_zombi_v2(
             continue
         print(f"\n{'─'*60}\nMOBO round {it+1}/{n_mobo_iterations}\n{'─'*60}")
 
-        train_X = torch.stack(all_X)        # (n, d)
-        train_Y = -torch.stack(all_Y)       # (n, 3) — negated for maximisation
+        train_X = torch.stack(all_X).to(device_t)        # (n, d)
+        train_Y = -torch.stack(all_Y).to(device_t)       # (n, 3) — negated for maximisation
 
         models = []
         for obj_idx in range(3):
@@ -1032,15 +1142,17 @@ def mobo_tune_zombi_v2(
         )  # (n_parallel, d)
 
         batch_cfgs = [
-            _config_from_unit(candidates[j].detach().numpy(), param_names,
+            _config_from_unit(candidates[j].detach().cpu().numpy(), param_names,
                               raw_bounds, log_params, int_params)
             for j in range(n_parallel)
         ]
         label = f"Round {it+1}"
-        new_X, new_Y, new_cfgs = _run_batch_parallel_v2(
+        new_X, new_Y, new_cfgs = _run_batch_mobo_v2(
             batch_cfgs,
-            [candidates[j].detach().numpy() for j in range(n_parallel)],
-            fixed_kw, n_parallel, threads_per_worker, label,
+            [candidates[j].detach().cpu().numpy() for j in range(n_parallel)],
+            fixed_kw,
+            label,
+            mobo_workers,
         )
         all_X.extend(new_X)
         all_Y.extend(new_Y)
@@ -1058,12 +1170,12 @@ def mobo_tune_zombi_v2(
     print("\n" + "=" * 70)
     print("V2 MOBO COMPLETE — Pareto-optimal configurations:")
     print("=" * 70)
-    header = f"  {'region_dist':>12}  {'dup_frac':>10}  {'pmr':>7}  config"
+    header = f"  {'region_dist':>12}  {'dup_frac':>10}  {'ΣVol':>12}  config"
     print(header)
     print("  " + "-" * (len(header) - 2))
     for idx in np.where(pareto_mask)[0]:
         print(f"  {Y_np[idx,0]:>12.5f}  {Y_np[idx,1]:>10.4f}  "
-              f"{Y_np[idx,2]:>7.4f}  {all_configs[idx]}")
+              f"{Y_np[idx,2]:>12.6e}  {all_configs[idx]}")
     print("=" * 70)
 
     return {
@@ -1092,22 +1204,46 @@ if __name__ == "__main__":
                     help="Path to max_min_regions.json from interactive_maxima_selector.py.")
     ap.add_argument("--mobo-init",    type=int, default=8)
     ap.add_argument("--mobo-iters",   type=int, default=20)
-    ap.add_argument("--parallel",     type=int, default=4)
-    ap.add_argument("--threads",      type=int, default=2)
+    ap.add_argument(
+        "--batch", "--parallel",
+        dest="batch",
+        type=int,
+        default=4,
+        help="MOBO: acquisition batch size (q).",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="MOBO: parallel processes to evaluate each batch (1 = sequential).",
+    )
+    ap.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="ZoMBI device: cuda or cpu. Omit to auto-select (prefer CUDA).",
+    )
     ap.add_argument("--results-json", type=str, default="hyperparam_results_v2.json")
     args = ap.parse_args()
+
+    if args.device is not None and args.device not in ("cuda", "cpu"):
+        ap.error("--device must be cuda or cpu")
+
+    dev_kw: Dict[str, Optional[str]] = {}
+    if args.device is not None:
+        dev_kw["device"] = args.device
 
     if args.mobo:
         mobo_tune_zombi_v2(
             regions_path=args.regions,
             n_initial=args.mobo_init,
             n_mobo_iterations=args.mobo_iters,
-            n_parallel=args.parallel,
-            threads_per_worker=args.threads,
+            n_parallel=args.batch,
+            mobo_workers=args.workers,
             csv_path=CSV_PEROVSKITE_PATH,
-            device="cpu",
             verbose_zombi=False,
             results_json=args.results_json,
+            **dev_kw,
         )
     else:
         results = run_zombi_test_v2(
@@ -1127,8 +1263,8 @@ if __name__ == "__main__":
             num_init_data=4,
             rf_global_samples=10_000_000,
             csv_path=CSV_PEROVSKITE_PATH,
-            device="cpu",
             verbose=True,
+            **dev_kw,
         )
         print("\n" + "=" * 70)
         print("RESULTS SUMMARY (V2)")

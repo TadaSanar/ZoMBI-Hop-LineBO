@@ -330,17 +330,17 @@ class TestGPSimplexCandidateSelection:
 
 class TestAcquisitionOptimizerInterior:
     """
-    Comprehensive tests for _optimize_acquisition (projected gradient ascent on simplex).
+    Comprehensive tests for _optimize_acquisition (natural-gradient ascent on simplex).
 
     Verifies that:
     - The optimizer can find interior maxima when the acquisition favors them.
     - The optimizer can find vertex/edge maxima when the acquisition favors them.
     - All returned points stay on the simplex and within bounds.
-    - More steps improve convergence; gradient ascent increases acquisition value.
+    - More steps improve convergence; ascent increases acquisition value.
     - 2D and 3D simplex; flat and peaked acquisitions; no crashes.
 
-    If these pass, SGD + projection are working; edge-only suggestions in real runs
-    are due to the acquisition (e.g. LogEI) favoring vertices, not broken optimization.
+    If these pass, natural-gradient ascent is working; edge-only suggestions in real runs
+    can still be due to the acquisition (e.g. LogEI) favoring vertices.
     """
 
     @pytest.fixture
@@ -763,7 +763,7 @@ class TestGPSimplexOptimization:
         init = torch.rand(3, 1, 3, dtype=torch.float64)
         init = init / init.sum(dim=-1, keepdim=True)
 
-        candidate, value = gp._optimize_acquisition(
+        candidates, values = gp._optimize_acquisition(
             acq=acq,
             bounds=bounds,
             initial_conditions=init,
@@ -771,8 +771,9 @@ class TestGPSimplexOptimization:
             max_steps=10,
         )
 
-        assert candidate is not None
-        assert value is not None
+        assert candidates.shape[0] > 0
+        candidate = candidates[0]
+        assert values.shape[0] > 0
         # Should be approximately on simplex
         assert abs(candidate.sum().item() - 1.0) < 0.01
 

@@ -42,6 +42,8 @@ class ZoMBIHopConfig:
     repulsion_lambda: Optional[float] = None  # Auto-computed dynamically if None
     acquisition_type: str = "ucb"  # "ucb" or "ei"; both use repulsion
     ucb_beta: float = 0.1  # Exploration weight for UCB (only when acquisition_type=="ucb")
+    nat_grad_step: float = 0.02  # Natural-gradient ascent step on the simplex
+    nat_grad_max_steps: int = 50  # Max ascent steps per acquisition restart
 
     # Device and dtype
     device: str = 'cuda'
@@ -89,6 +91,8 @@ class ZoMBIHopConfig:
         assert self.max_gp_points > 0, "max_gp_points must be positive"
         # repulsion_lambda can be None (auto-computed) or positive
         assert self.repulsion_lambda is None or self.repulsion_lambda > 0, "repulsion_lambda must be None or positive"
+        assert self.nat_grad_step > 0, "nat_grad_step must be positive"
+        assert self.nat_grad_max_steps >= 1, "nat_grad_max_steps must be >= 1"
 
 
 @dataclass

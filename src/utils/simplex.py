@@ -11,9 +11,8 @@ The simplex constraint ensures that compositions sum to 1:
 from __future__ import annotations
 
 import torch
-import numpy as np
 import math
-from typing import Union, Tuple, Optional
+from typing import Tuple, Optional
 
 
 # =============================================================================
@@ -92,204 +91,175 @@ def polytope_volume(S: torch.Tensor, subset_sums: torch.Tensor,
     return result
 
 
+def newton_in_bracket(
+    sr: torch.Tensor,
+    tl: torch.Tensor,
+    th: torch.Tensor,
+    ss: torch.Tensor,
+    si: torch.Tensor,
+    m: int,
+    denom_int: int,
+    denom_vol: int,
+    vol_at_tl: torch.Tensor,
+    target_mass: torch.Tensor,
+    u: torch.Tensor,
+    xtol: float = 1e-12,
+    max_iter: int = 20,
+) -> torch.Tensor:
+    """Safe Newton root finder for bounded-simplex CDF inversion."""
+    n = tl.shape[0]
+    # Warm start: uncapped inverse-CDF formula, with exact linear form for m=1.
+    if m == 1:
+        t = tl + (th - tl) * u
+    else:
+        t = sr - (sr - tl) * (1.0 - u).clamp(min=1e-30).pow(1.0 / m)
+    t = torch.minimum(torch.maximum(t, tl), th)
+    lo = tl.clone()
+    hi = th.clone()
+    active = torch.ones(n, dtype=torch.bool, device=tl.device)
+
+    for _ in range(max_iter):
+        if not active.any():
+            break
+        ta = t[active]
+        sra = sr[active]
+        loa = lo[active]
+        hia = hi[active]
+        vol_t = polytope_volume(sra - ta, ss, si, m, denom_int)
+        g_val = (vol_at_tl[active] - vol_t) - target_mass[active]
+        if m > 1:
+            g_der = polytope_volume(sra - ta, ss, si, m - 1, denom_vol)
+        else:
+            g_der = torch.ones_like(ta)
+        t_newton = ta - g_val / g_der.clamp(min=1e-30)
+        lo_new = torch.where(g_val < 0, ta, loa)
+        hi_new = torch.where(g_val > 0, ta, hia)
+        t_new = torch.minimum(torch.maximum(t_newton, lo_new), hi_new)
+        lo[active] = lo_new
+        hi[active] = hi_new
+        t[active] = t_new
+        interval = hi[active] - lo[active]
+        newly_done = (interval < xtol) | (g_val.abs() < 1e-13)
+        if newly_done.any():
+            active_idx = active.nonzero(as_tuple=True)[0]
+            active[active_idx[newly_done]] = False
+
+    return torch.minimum(torch.maximum(t, tl), th)
+
+
 def random_simplex(
     num_samples: int,
     a: torch.Tensor,
     b: torch.Tensor,
     S: float = 1.0,
-    max_batch: int = None,
+    max_batch: Optional[int] = None,
     debug: bool = False,
     device: str = 'cuda',
     torch_dtype: torch.dtype = torch.float64,
+    seed: Optional[int] = None,
     **ignored,
 ) -> torch.Tensor:
-    """
-    Generate CFS samples from bounded simplex.
-
-    Uses Conditional Frechet Sampling for uniform sampling on a bounded simplex.
-
-    Parameters
-    ----------
-    num_samples : int
-        Number of samples to generate.
-    a : torch.Tensor
-        Lower bounds for each component.
-    b : torch.Tensor
-        Upper bounds for each component.
-    S : float
-        Target sum (default 1.0 for probability simplex).
-    max_batch : int, optional
-        Maximum batch size for memory efficiency.
-    debug : bool
-        Enable debug output.
-    device : str
-        Torch device.
-    torch_dtype : torch.dtype
-        Output data type.
-
-    Returns
-    -------
-    torch.Tensor
-        (num_samples, d) tensor of samples on the bounded simplex.
-    """
-    a = a.to(device=device, dtype=torch.float64)
-    b = b.to(device=device, dtype=torch.float64)
+    """Generate CFS samples uniformly from the bounded simplex."""
+    a = a.to(device=device, dtype=torch.float64).flatten()
+    b = b.to(device=device, dtype=torch.float64).flatten()
     d = a.numel()
-
-    a = a.flatten()
-    b = b.flatten()
-    caps_full = (b - a).flatten()
-    assert caps_full.ndim == 1
+    caps_full = b - a
 
     if d > 20:
-        raise ValueError("Analytic CFS variant supports dimension ≤ 20")
+        raise ValueError("Analytic CFS supports dimension <= 20 (2^d cost)")
     if not torch.all(b >= a):
-        raise ValueError("Each upper bound must exceed the lower bound")
+        raise ValueError("All upper bounds must exceed lower bounds")
 
-    S = torch.as_tensor(S, dtype=torch.float64, device=device)
-    if not (a.sum() - 1e-12 <= S <= b.sum() + 1e-12):
-        raise ValueError("Sum S outside feasible range")
+    s = torch.as_tensor(S, dtype=torch.float64, device=device)
+    if not (a.sum() - 1e-10 <= s <= b.sum() + 1e-10):
+        raise ValueError(
+            f"Sum S={s.item():.6f} outside feasible range "
+            f"[{a.sum().item():.6f}, {b.sum().item():.6f}]"
+        )
+    s0 = s - a.sum()
 
     if max_batch is None:
         if device == 'cuda':
-            estimated_bytes_per_point = d * 8 * 32
-            gpu_memory = torch.cuda.get_device_properties(device).total_memory
-            available_memory = gpu_memory - torch.cuda.memory_allocated(device)
-            safe_memory = available_memory * 0.8
-            max_batch = max(int(safe_memory / estimated_bytes_per_point), 1000)
+            estimated_bytes = d * 8 * 32
+            gpu_mem = torch.cuda.get_device_properties(device).total_memory
+            avail = (gpu_mem - torch.cuda.memory_allocated(device)) * 0.8
+            max_batch = max(int(avail / estimated_bytes), 1000)
         else:
-            max_batch = min(num_samples, 10_000_000)
+            max_batch = min(num_samples, 5_000_000)
 
     if num_samples > 10_000:
         print(f"Generating {num_samples:,} samples using CFS")
-
-    caps_full = b - a
-    S0 = S - a.sum()
-
-    rng = torch.Generator(device=device)
+    if debug:
+        print(f"CFS: d={d}, num_samples={num_samples:,}, batch={max_batch:,}, S0={s0.item():.4f}, device={device}")
 
     precomp = []
     for k in range(d - 1):
-        ss, si = subset_sums_and_signs(caps_full[k+1:])
+        ss, si = subset_sums_and_signs(caps_full[k + 1:])
         precomp.append((ss, si))
+
+    rng = torch.Generator(device=device)
+    if seed is not None:
+        rng.manual_seed(seed)
 
     out = torch.empty((num_samples, d), dtype=torch.float64, device=device)
     written = 0
-
     while written < num_samples:
-        B = min(max_batch, num_samples - written)
-
-        S_rem = S0.expand(B).clone()
-        caps_rem = caps_full.clone()
-        y = torch.empty((B, d), dtype=torch.float64, device=device)
+        batch = min(max_batch, num_samples - written)
+        s_rem = s0.expand(batch).clone()
+        y = torch.empty((batch, d), dtype=torch.float64, device=device)
 
         for k in range(d - 1):
             ss, si = precomp[k]
             m = d - k - 1
-            denom_vol = math.factorial(m - 1)
-            denom_int = math.factorial(m)
+            sum_tail_caps = caps_full[k + 1:].sum()
+            t_low = torch.clamp(s_rem - sum_tail_caps, min=0.0)
+            t_high = torch.minimum(caps_full[k].expand_as(s_rem), s_rem)
+            t_high = torch.maximum(t_high, t_low)
+            det_mask = (t_high - t_low) < 1e-14
+            yk = t_low.clone()
+            sto_mask = ~det_mask
+            n_sto = sto_mask.sum().item()
 
-            sum_tail_caps = caps_full[k+1:].sum()
-            t_low = torch.clamp(S_rem - sum_tail_caps, min=0.0)
-            t_high = torch.minimum(caps_full[k].expand_as(S_rem), S_rem)
+            if n_sto > 0:
+                tl = t_low[sto_mask]
+                th = t_high[sto_mask]
+                sr = s_rem[sto_mask]
+                denom_int = math.factorial(m)
+                denom_vol = math.factorial(m - 1) if m > 1 else 1
+                vol_at_tl = polytope_volume(sr - tl, ss, si, m, denom_int)
+                vol_at_th = polytope_volume(sr - th, ss, si, m, denom_int)
+                total_mass = (vol_at_tl - vol_at_th).clamp(min=1e-30)
+                u = torch.rand(n_sto, generator=rng, device=device, dtype=torch.float64)
+                target_mass = u * total_mass
+                t_solved = newton_in_bracket(
+                    sr, tl, th, ss, si, m, denom_int, denom_vol,
+                    vol_at_tl, target_mass, u, xtol=1e-12, max_iter=20,
+                )
+                yk[sto_mask] = torch.clamp(t_solved, tl, th)
 
-            deterministic_mask = (t_high - t_low) < 1e-15
-            yk = torch.zeros_like(S_rem)
-            yk[deterministic_mask] = t_low[deterministic_mask]
-
-            stochastic_mask = ~deterministic_mask
-            n_stochastic = stochastic_mask.sum().item()
-
-            if n_stochastic > 0:
-                S_todo = S_rem[stochastic_mask]
-                tl = t_low[stochastic_mask]
-                th = t_high[stochastic_mask]
-
-                interval_sizes = th - tl
-                valid_mask = interval_sizes > 1e-12
-                if torch.sum(valid_mask) == 0:
-                    yk[stochastic_mask] = (tl + th) / 2
-                    continue
-
-                S_todo = S_todo[valid_mask]
-                tl_valid = tl[valid_mask]
-                th_valid = th[valid_mask]
-
-                def _volume(t: torch.Tensor) -> torch.Tensor:
-                    vol = polytope_volume(S_todo - t, ss, si, m - 1, denom_vol)
-                    return torch.clamp(vol, min=1e-15)
-
-                def _cdf(t: torch.Tensor) -> torch.Tensor:
-                    shifted = S_todo - t
-                    I_high = polytope_volume(shifted, ss, si, m, denom_int)
-                    shifted_low = S_todo - tl_valid
-                    I_low = polytope_volume(shifted_low, ss, si, m, denom_int)
-
-                    I_low = torch.clamp(I_low, min=0.0)
-                    I_high = torch.clamp(I_high, min=0.0)
-                    I_high = torch.minimum(I_high, I_low)
-
-                    cdf_val = I_low - I_high
-                    return torch.clamp(cdf_val, min=1e-15)
-
-                Z = _cdf(th_valid)
-
-                if torch.any(Z <= 0) or torch.any(torch.isnan(Z)) or torch.any(torch.isinf(Z)):
-                    Z = torch.clamp(Z, min=1e-15)
-
-                U = torch.rand(len(tl_valid), generator=rng, device=device, dtype=torch.float64)
-                target = U * Z
-
-                t = tl_valid + U * (th_valid - tl_valid)
-
-                for iteration in range(12):
-                    f = _cdf(t) - target
-                    fp = _volume(t)
-
-                    fp_safe = torch.clamp(fp.abs(), min=1e-15)
-                    fp_sign = torch.sign(fp)
-
-                    delta = f / (fp_safe * fp_sign)
-
-                    step_limit = 0.1 * (th_valid - tl_valid)
-                    delta = torch.clamp(delta, -step_limit, step_limit)
-
-                    t_new = t - delta
-                    t = torch.clamp(t_new, tl_valid, th_valid)
-
-                    if torch.any(torch.isnan(t)) or torch.any(torch.isinf(t)):
-                        t = tl_valid + torch.rand_like(tl_valid) * (th_valid - tl_valid)
-                        break
-
-                    if torch.all(torch.abs(f) < 1e-10):
-                        break
-
-                if torch.sum(valid_mask) > 0:
-                    yk_temp = torch.zeros_like(S_rem[stochastic_mask])
-                    yk_temp[valid_mask] = t
-                    yk_temp[~valid_mask] = (tl[~valid_mask] + th[~valid_mask]) / 2
-                    yk[stochastic_mask] = yk_temp
-                else:
-                    yk[stochastic_mask] = (tl + th) / 2
-
-            if torch.any(torch.isnan(yk)) or torch.any(torch.isinf(yk)):
-                alpha, beta = 2.0, 2.0
-                U_beta = torch.distributions.Beta(alpha, beta).sample((len(S_rem),)).to(device=device, dtype=torch.float64)
-                interval_size = torch.clamp(t_high - t_low, min=1e-15)
-                yk = t_low + U_beta * interval_size
-                yk = torch.clamp(yk, min=t_low, max=t_high)
+            bad = torch.isnan(yk) | torch.isinf(yk)
+            if bad.any():
+                interval = (t_high - t_low).clamp(min=0.0)
+                yk[bad] = t_low[bad] + torch.rand(
+                    bad.sum(), generator=rng, device=device, dtype=torch.float64
+                ) * interval[bad]
 
             y[:, k] = yk
-            S_rem -= yk
-            S_rem = torch.clamp(S_rem, min=0.0)
+            s_rem = (s_rem - yk).clamp(min=0.0)
 
-        y[:, -1] = torch.minimum(torch.maximum(S_rem, torch.zeros_like(S_rem)),
-                               caps_full[-1].expand_as(S_rem))
+        last = s_rem.clamp(min=0.0, max=caps_full[-1].item())
+        if debug:
+            violation = (s_rem - caps_full[-1]).clamp(min=0).max().item()
+            if violation > 1e-8:
+                print(f"  [warn] batch {written}: max last-coord violation = {violation:.2e}")
+        y[:, -1] = last
+        out[written: written + batch] = y + a.unsqueeze(0)
+        written += batch
 
-        out[written: written+B] = y + a
-        written += B
-
-    out = out.reshape(num_samples, d)
+    if debug:
+        sums = out.sum(dim=1)
+        err = (sums - s).abs().max().item()
+        print(f"CFS done. Max sum error: {err:.2e}")
     return out.to(dtype=torch_dtype)
 
 
@@ -339,156 +309,62 @@ def proj_simplex(X: torch.Tensor) -> torch.Tensor:
     return result
 
 
-def random_zero_sum_directions(n: int, d: int, device: str = 'cuda',
-                                dtype: torch.dtype = torch.float64) -> torch.Tensor:
+def random_simplex_direction(n_directions: int, d: int, device: str = 'cuda',
+                              dtype: torch.dtype = torch.float64,
+                              seed: Optional[int] = None) -> torch.Tensor:
     """
-    Sample n vectors of dimension d with zero sum and unit norm.
+    Sample ``n_directions`` uniformly random directions tangent to the probability simplex in R^d.
 
-    These directions preserve the simplex constraint when added to a point
-    on the simplex.
+    Each direction lives in the zero-sum hyperplane (sum = 0) and has unit norm,
+    so adding a scaled direction to any point on the simplex keeps the sum at 1.
+
+    Algorithm (matches the statistically verified scalar version):
+        1. Draw v ~ N(0, I) in R^d
+        2. Project onto the zero-sum hyperplane: v -= v.mean()
+        3. Normalise: v /= ||v||
+        4. Resample rows where ||v|| < 1e-12 (degenerate; astronomically rare)
 
     Parameters
     ----------
-    n : int
+    n_directions : int
         Number of directions to sample.
     d : int
-        Dimensionality.
+        Dimensionality of each direction.
     device : str
         Torch device.
     dtype : torch.dtype
         Data type.
+    seed : int, optional
+        Random seed for reproducibility.
 
     Returns
     -------
     torch.Tensor
-        (n, d) tensor of zero-sum, unit-norm vectors.
+        (n_directions, d) tensor of zero-sum, unit-norm vectors.
     """
-    # Generate random vectors
-    v = torch.randn(n, d, device=device, dtype=dtype)
-    # Make zero-sum by subtracting mean
+    if seed is not None:
+        torch.manual_seed(seed)
+    v = torch.randn(n_directions, d, device=device, dtype=dtype)
     v = v - v.mean(dim=1, keepdim=True)
-    # Normalize to unit norm
     norms = v.norm(dim=1, keepdim=True)
-    # Handle zero-norm rows by resampling
-    mask = (norms.squeeze() == 0)
+    mask = norms.squeeze(1) < 1e-12
     while mask.any():
-        r = torch.randn(mask.sum(), d, device=device, dtype=dtype)
+        r = torch.randn(int(mask.sum()), d, device=device, dtype=dtype)
         r = r - r.mean(dim=1, keepdim=True)
         v[mask] = r
         norms[mask] = v[mask].norm(dim=1, keepdim=True)
-        mask = (norms.squeeze() == 0)
+        mask = norms.squeeze(1) < 1e-12
     return v / norms
+
+
+# Backward-compatible alias
+random_zero_sum_directions = random_simplex_direction
 
 
 # =============================================================================
 # Basic Simplex Utilities (original functions)
 # =============================================================================
 
-def sample_simplex(n: int, d: int,
-                   lower: Union[torch.Tensor, float] = 0.0,
-                   upper: Union[torch.Tensor, float] = 1.0,
-                   device: str = 'cuda',
-                   dtype: torch.dtype = torch.float64) -> torch.Tensor:
-    """
-    Sample n points uniformly from the d-dimensional simplex.
-
-    Uses the Dirichlet distribution for uniform sampling.
-
-    Parameters
-    ----------
-    n : int
-        Number of samples to generate.
-    d : int
-        Dimensionality (number of components).
-    lower : torch.Tensor or float
-        Lower bounds for each component.
-    upper : torch.Tensor or float
-        Upper bounds for each component.
-    device : str
-        Torch device.
-    dtype : torch.dtype
-        Data type.
-
-    Returns
-    -------
-    torch.Tensor
-        (n, d) tensor of samples on the simplex.
-    """
-    # Dirichlet(1, 1, ..., 1) gives uniform distribution on simplex
-    alpha = torch.ones(d, device=device, dtype=dtype)
-    dirichlet = torch.distributions.Dirichlet(alpha)
-    samples = dirichlet.sample((n,))
-
-    # Apply bounds if non-trivial
-    if isinstance(lower, (int, float)) and lower == 0.0:
-        if isinstance(upper, (int, float)) and upper == 1.0:
-            return samples
-
-    # Handle bounded simplex via rejection sampling or rescaling
-    lower = torch.as_tensor(lower, device=device, dtype=dtype)
-    upper = torch.as_tensor(upper, device=device, dtype=dtype)
-
-    if lower.numel() == 1:
-        lower = lower.expand(d)
-    if upper.numel() == 1:
-        upper = upper.expand(d)
-
-    # Simple rescaling (may not be perfectly uniform but practical)
-    range_vals = upper - lower
-    samples = lower + samples * range_vals
-
-    # Re-normalize to sum to 1
-    samples = samples / samples.sum(dim=1, keepdim=True)
-
-    return samples
-
-
-def project_to_simplex(x: torch.Tensor, eps: float = 1e-10) -> torch.Tensor:
-    """
-    Project points onto the probability simplex.
-
-    Uses the algorithm from "Efficient Projections onto the l1-Ball
-    for Learning in High Dimensions" (Duchi et al., 2008).
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Points to project, shape (..., d).
-    eps : float
-        Small value for numerical stability.
-
-    Returns
-    -------
-    torch.Tensor
-        Projected points on the simplex.
-    """
-    original_shape = x.shape
-    if x.dim() == 1:
-        x = x.unsqueeze(0)
-
-    # Sort in descending order
-    u, _ = torch.sort(x, dim=-1, descending=True)
-
-    # Compute cumulative sum
-    cssv = torch.cumsum(u, dim=-1)
-
-    # Find rho: largest j such that u[j] - (cssv[j] - 1) / (j+1) > 0
-    d = x.shape[-1]
-    indices = torch.arange(1, d + 1, device=x.device, dtype=x.dtype)
-    rho = torch.sum((u * indices) > (cssv - 1), dim=-1) - 1
-    rho = rho.long()
-
-    # Compute theta
-    batch_indices = torch.arange(x.shape[0], device=x.device)
-    theta = (torch.gather(cssv, 1, rho.unsqueeze(-1)).squeeze(-1) - 1) / (rho + 1).float()
-
-    # Apply projection
-    projected = torch.clamp(x - theta.unsqueeze(-1), min=0)
-
-    if len(original_shape) == 1:
-        projected = projected.squeeze(0)
-
-    return projected
 
 
 def is_on_simplex(x: torch.Tensor, tol: float = 1e-6) -> torch.Tensor:
@@ -572,26 +448,6 @@ def simplex_distance(x: torch.Tensor, y: torch.Tensor,
         raise ValueError(f"Unknown metric: {metric}")
 
 
-def barycentric_coordinates(vertices: torch.Tensor,
-                            points: torch.Tensor) -> torch.Tensor:
-    """
-    Compute barycentric coordinates of points w.r.t. simplex vertices.
-
-    Parameters
-    ----------
-    vertices : torch.Tensor
-        Simplex vertices, shape (d, d) where each row is a vertex.
-    points : torch.Tensor
-        Points to convert, shape (n, d).
-
-    Returns
-    -------
-    torch.Tensor
-        Barycentric coordinates, shape (n, d).
-    """
-    # For standard simplex, vertices are identity matrix
-    # Barycentric coords are just the coordinates themselves
-    return points
 
 
 def composition_to_ilr(x: torch.Tensor) -> torch.Tensor:
@@ -617,7 +473,7 @@ def composition_to_ilr(x: torch.Tensor) -> torch.Tensor:
     # Helmert-like ILR transformation
     ilr_coords = []
     for i in range(d - 1):
-        coef = np.sqrt((i + 1) / (i + 2))
+        coef = math.sqrt((i + 1) / (i + 2))
         term1 = log_x[..., :i+1].sum(dim=-1) / (i + 1)
         term2 = log_x[..., i+1]
         ilr_coords.append(coef * (term1 - term2))
@@ -645,7 +501,7 @@ def ilr_to_composition(ilr: torch.Tensor, d: int) -> torch.Tensor:
     log_x = torch.zeros(*ilr.shape[:-1], d, device=ilr.device, dtype=ilr.dtype)
 
     for i in range(d - 1):
-        coef = np.sqrt((i + 1) / (i + 2))
+        coef = math.sqrt((i + 1) / (i + 2))
         contribution = ilr[..., i] / coef
 
         # Distribute to first i+1 components

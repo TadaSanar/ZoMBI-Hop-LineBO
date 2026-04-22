@@ -41,6 +41,40 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Database interfacing settings
 OPTIMIZING_DIMS = [0, 8, 9]
 
+_SQRT3_2 = np.sqrt(3) / 2
+
+
+def _composition_to_ternary_xy(comp: np.ndarray) -> np.ndarray:
+    """
+    Map 3-component compositions (rows sum ~1) to Cartesian coordinates in the
+    standard equilateral ternary: corner 0 at origin, corner 1 at (1,0), corner 2 at (0.5, √3/2).
+    """
+    p = np.asarray(comp, dtype=float)
+    if p.size == 0:
+        return np.zeros((0, 2))
+    if p.ndim == 1:
+        p = p.reshape(1, -1)
+    s = p.sum(axis=-1, keepdims=True)
+    s = np.where(s == 0, 1.0, s)
+    p = p / s
+    if p.shape[1] != 3:
+        raise ValueError(f"ternary expects 3 columns, got shape {p.shape}")
+    x = p[:, 1] + 0.5 * p[:, 2]
+    y = _SQRT3_2 * p[:, 2]
+    return np.column_stack([x, y])
+
+
+def _draw_ternary_frame(ax, corner_labels: Tuple[str, str, str]) -> None:
+    """Draw triangle outline and corner labels."""
+    ax.plot([0, 1, 0.5, 0], [0, 0, _SQRT3_2, 0], "k-", lw=1.2)
+    ax.set_aspect("equal")
+    ax.set_xlim(-0.08, 1.08)
+    ax.set_ylim(-0.08, _SQRT3_2 + 0.12)
+    ax.axis("off")
+    ax.text(-0.02, -0.03, corner_labels[0], ha="right", va="top", fontsize=9)
+    ax.text(1.02, -0.03, corner_labels[1], ha="left", va="top", fontsize=9)
+    ax.text(0.5, _SQRT3_2 + 0.02, corner_labels[2], ha="center", va="bottom", fontsize=9)
+
 
 # --- Live plotting and iteration logging ---
 def setup_live_plots() -> Tuple[Dict[str, Any], List[float], List[float], List[np.ndarray], Dict[str, Any]]:
@@ -59,6 +93,7 @@ def update_live_plots(
     new_x_actual: np.ndarray,
     new_y: np.ndarray,
     needle_plot_points: List[Dict[str, float]] | None = None,
+    suggested_lines: List[Tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Append new points, close previous plot window, create a new figure with full state, show it (non-blocking). Plots are not kept active."""
     if not _HAS_MPL:
@@ -84,25 +119,93 @@ def update_live_plots(
     center = np.mean(X, axis=0)
     # center = np.ones((len(OPTIMIZING_DIMS),)) * 1.0 / len(OPTIMIZING_DIMS)
     distances = np.linalg.norm(X - center, axis=1)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    n_pts = len(all_y)
+    y_arr = np.asarray(all_y, dtype=float)
+    y_min, y_max = float(np.min(y_arr)), float(np.max(y_arr))
+    if y_max <= y_min:
+        y_max = y_min + 1e-9
+
+    d_comp = X.shape[1]
+    use_ternary = d_comp == 3
+    if use_ternary:
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5.2))
+        ax1, ax2, ax3 = axes[0], axes[1], axes[2]
+    else:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+        ax3 = None
+
     fig.suptitle("ZoMBI-Hop live")
     ax1.set_xlabel("Sample number")
     ax1.set_ylabel("Objective value")
     ax1.set_title("Objective value vs sample number")
-    ax1.plot(all_sample_num, all_y, "b.-", markersize=4)
+    ax1.plot(all_sample_num, all_y, "b.-", markersize=4, alpha=0.7, zorder=1)
+    sc1 = ax1.scatter(all_sample_num, all_y, c=y_arr, cmap="viridis", s=25, ec="k", lw=0.25, zorder=2, vmin=y_min, vmax=y_max)
+    fig.colorbar(sc1, ax=ax1, label="Objective", fraction=0.046, pad=0.02)
+
     ax2.set_xlabel("Distance from center of mass")
     ax2.set_ylabel("Objective value")
     ax2.set_title("Objective value vs distance from center")
-    n_pts = len(all_y)
     iteration_order = np.arange(n_pts)
     scatter_ax2 = ax2.scatter(
-        distances, all_y, c=iteration_order, ec="k", lw=0.3, cmap="viridis", s=8, alpha=1, vmin=0, vmax=max(n_pts - 1, 1)
+        distances,
+        all_y,
+        c=y_arr,
+        ec="k",
+        lw=0.3,
+        cmap="viridis",
+        s=22,
+        alpha=1,
+        vmin=y_min,
+        vmax=y_max,
     )
-    fig.colorbar(scatter_ax2, ax=ax2, label="Iteration (dark=oldest, yellow=newest)")
+    fig.colorbar(scatter_ax2, ax=ax2, label="Objective", fraction=0.046, pad=0.02)
+
     if needle_plot_points:
         for n in needle_plot_points:
             ax1.scatter(n["sample_idx"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
             ax2.scatter(n["distance"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
+
+    if use_ternary and ax3 is not None:
+        labels = tuple(f"dim {i}" for i in OPTIMIZING_DIMS)
+        _draw_ternary_frame(ax3, labels)
+        ax3.set_title("Composition (ternary) — points colored by objective")
+
+        Xn = normalize_last_axis(X)
+        xy = _composition_to_ternary_xy(Xn)
+        sc3 = ax3.scatter(
+            xy[:, 0], xy[:, 1], c=y_arr, cmap="viridis", s=28, ec="k", lw=0.3, zorder=3, vmin=y_min, vmax=y_max
+        )
+        fig.colorbar(sc3, ax=ax3, label="Objective", fraction=0.046, pad=0.02)
+
+        if suggested_lines:
+            line_styles = [("-", "C0", 2.0), ("--", "C1", 2.0)]
+            for i, seg in enumerate(suggested_lines[:2]):
+                if seg is None or len(seg) != 2:
+                    continue
+                a, b = np.asarray(seg[0], dtype=float).ravel(), np.asarray(seg[1], dtype=float).ravel()
+                if a.size != 3 or b.size != 3:
+                    continue
+                la = normalize_last_axis(a.reshape(1, 3))
+                lb = normalize_last_axis(b.reshape(1, 3))
+                lxy = _composition_to_ternary_xy(np.vstack([la, lb]))
+                sty, col, lw = line_styles[i % len(line_styles)]
+                ax3.plot(lxy[:, 0], lxy[:, 1], linestyle=sty, color=col, lw=lw, alpha=0.85, zorder=4, label=f"LineBO line {i}")
+
+        if needle_plot_points:
+            for n in needle_plot_points:
+                si = int(n["sample_idx"]) - 1
+                if 0 <= si < len(all_x_actual):
+                    pn = normalize_last_axis(np.asarray(all_x_actual[si], dtype=float).reshape(1, 3))
+                    nxy = _composition_to_ternary_xy(pn)
+                    ax3.scatter(
+                        nxy[0, 0], nxy[0, 1], marker="*", s=280, c="gold", zorder=6, edgecolors="darkgoldenrod", linewidths=1.0
+                    )
+
+        h, lab = ax3.get_legend_handles_labels()
+        if h:
+            ax3.legend(loc="upper right", fontsize=8, framealpha=0.9)
+
+    fig.tight_layout()
     fig_ref["fig"] = fig
     plt.show(block=False)
     plt.pause(0.001)  # allow GUI to update
@@ -410,6 +513,7 @@ def linebo_sampler_wrapper(
                 fig_ref, all_sample_num, all_y, all_x_actual,
                 np.zeros((0, dimensions)), np.array([]),
                 needle_plot_points=needle_plot_points,
+                suggested_lines=None,
             )
 
     def wrapper(
@@ -421,9 +525,19 @@ def linebo_sampler_wrapper(
         y_flat = y.reshape(-1)
         x_act_np = x_actual.cpu().numpy()
         y_np = y_flat.cpu().numpy()
+        suggested: List[Tuple[np.ndarray, np.ndarray]] | None = None
+        if endpoints_log_ref:
+            try:
+                suggested = [
+                    (endpoints_log_ref["line_0_left"], endpoints_log_ref["line_0_right"]),
+                    (endpoints_log_ref["line_1_left"], endpoints_log_ref["line_1_right"]),
+                ]
+            except KeyError:
+                suggested = None
         update_live_plots(
             fig_ref, all_sample_num, all_y, all_x_actual, x_act_np, y_np,
             needle_plot_points=needle_plot_points,
+            suggested_lines=suggested,
         )
         log_iteration(x_tell, endpoints_log_ref, x_requested, x_actual, y_flat)
         return x_requested, x_actual, y_flat
@@ -471,43 +585,78 @@ def initial_lines_on_boundary(
     return np.array(endpoints_list)
 
 
-def _load_bounds_from_run(run_dir: Path, device: torch.device, dtype: torch.dtype = torch.float64) -> torch.Tensor:
-    """Load bounds tensor from a saved run directory (for resuming)."""
+def _latest_snapshot_dir(run_dir: Path) -> Path | None:
+    """Return the latest snapshot directory, trying new format then old format."""
+    latest_txt = run_dir / "latest.txt"
+    if latest_txt.exists():
+        name = latest_txt.read_text().strip()
+        candidate = run_dir / "snapshots" / name
+        if candidate.exists():
+            return candidate
+    # Old format fallback
     current_state_file = run_dir / "current_state.txt"
-    if not current_state_file.exists():
-        raise FileNotFoundError(f"No current_state.txt in {run_dir}; cannot load bounds for resume.")
-    label = current_state_file.read_text().strip()
-    state_dir = run_dir / "states" / label
-    if not state_dir.exists():
-        raise FileNotFoundError(f"State directory {state_dir} not found; cannot load bounds.")
-    tensors_path = state_dir / "tensors.pt"
+    if current_state_file.exists():
+        label = current_state_file.read_text().strip()
+        candidate = run_dir / "states" / label
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_bounds_from_run(run_dir: Path, device: torch.device, dtype: torch.dtype = torch.float64) -> torch.Tensor:
+    """Load bounds tensor from a saved run directory (for resuming). Handles both snapshot formats."""
+    snap = _latest_snapshot_dir(run_dir)
+    if snap is None:
+        raise FileNotFoundError(f"No valid checkpoint found in {run_dir}; cannot load bounds for resume.")
+    tensors_path = snap / "tensors.pt"
     if not tensors_path.exists():
-        raise FileNotFoundError(f"No tensors.pt in {state_dir}; cannot load bounds.")
+        raise FileNotFoundError(f"No tensors.pt in {snap}.")
     tensors = torch.load(tensors_path, map_location=device, weights_only=False)
     if "bounds" not in tensors:
-        raise KeyError(f"tensors.pt in {state_dir} has no 'bounds' key.")
+        raise KeyError(f"tensors.pt in {snap} has no 'bounds' key.")
     return tensors["bounds"].to(device=device, dtype=dtype)
 
 
 def _load_plot_data_from_run(run_dir: Path) -> Tuple[List[float], List[float], List[np.ndarray]] | None:
-    """Load latest all_points (sample numbers, y values, x_actual) from resumed run for live plots. Returns None if missing."""
-    current_state_file = run_dir / "current_state.txt"
-    if not current_state_file.exists():
+    """Load all evaluated (x_actual, y) pairs from a resumed run for live plots.
+    Handles both new snapshot format (tensors.pt) and old format (all_points.csv)."""
+    snap = _latest_snapshot_dir(run_dir)
+    if snap is None:
         return None
-    label = current_state_file.read_text().strip()
-    state_dir = run_dir / "states" / label
-    csv_path = state_dir / "all_points.csv"
+
+    # ── New format: reconstruct from tensors.pt ───────────────────────────────
+    tensors_path = snap / "tensors.pt"
+    if tensors_path.exists():
+        try:
+            tensors = torch.load(tensors_path, map_location="cpu", weights_only=False)
+            X_all = tensors.get("X_all_actual")
+            Y_all = tensors.get("Y_all")
+            if X_all is not None and Y_all is not None and X_all.shape[0] > 0:
+                X_np = X_all.numpy()
+                Y_np = Y_all.numpy().ravel()
+                all_sample_num = list(range(1, len(Y_np) + 1))
+                all_y = [float(v) for v in Y_np]
+                all_x_actual = [X_np[i] for i in range(len(Y_np))]
+                return (all_sample_num, all_y, all_x_actual)
+        except Exception:
+            pass
+
+    # ── Old format: all_points.csv ────────────────────────────────────────────
+    csv_path = snap / "all_points.csv"
     if not csv_path.exists():
         return None
-    all_sample_num: List[float] = []
-    all_y: List[float] = []
-    all_x_actual: List[np.ndarray] = []
+    all_sample_num = []
+    all_y = []
+    all_x_actual = []
     try:
         with open(csv_path, newline="") as f:
             reader = csv.DictReader(f)
             if not reader.fieldnames:
                 return None
-            x_cols = sorted([c for c in reader.fieldnames if c.startswith("x_actual_") and c[len("x_actual_"):].isdigit()], key=lambda c: int(c.split("_")[-1]))
+            x_cols = sorted(
+                [c for c in reader.fieldnames if c.startswith("x_actual_") and c[len("x_actual_"):].isdigit()],
+                key=lambda c: int(c.split("_")[-1]),
+            )
             for row in reader:
                 try:
                     y_val = float(row["y_value"])
@@ -519,32 +668,34 @@ def _load_plot_data_from_run(run_dir: Path) -> Tuple[List[float], List[float], L
                 all_x_actual.append(np.array(x_vals))
     except Exception:
         return None
-    if not all_y:
-        return None
-    return (all_sample_num, all_y, all_x_actual)
+    return (all_sample_num, all_y, all_x_actual) if all_y else None
 
 
 def _load_needles_for_plot(
     run_dir: Path,
     all_x_actual: List[np.ndarray],
 ) -> List[Dict[str, float]]:
-    """Load needle positions for live plot stars from resumed run (same state as all_points). Returns list of {sample_idx, y, distance}."""
+    """Load needle positions for live-plot stars. Handles both new (needles.json) and old (needles_results.json) formats."""
     out: List[Dict[str, float]] = []
     if not all_x_actual:
         return out
-    current_state_file = run_dir / "current_state.txt"
-    if not current_state_file.exists():
+    snap = _latest_snapshot_dir(run_dir)
+    if snap is None:
         return out
-    label = current_state_file.read_text().strip()
-    state_dir = run_dir / "states" / label
-    needles_path = state_dir / "needles_results.json"
-    if not needles_path.exists():
+
+    # New format uses needles.json; old format used needles_results.json
+    for fname in ("needles.json", "needles_results.json"):
+        needles_path = snap / fname
+        if needles_path.exists():
+            try:
+                with open(needles_path) as f:
+                    needles_data = json.load(f)
+                break
+            except Exception:
+                continue
+    else:
         return out
-    try:
-        with open(needles_path) as f:
-            needles_data = json.load(f)
-    except Exception:
-        return out
+
     X = np.array(all_x_actual)
     center = np.mean(X, axis=0)
     for rec in needles_data:
@@ -642,33 +793,36 @@ def run_zombi_main(resume_uuid: str | None = None):
         X_init_expected = torch.cat(x_expected_list, dim=0)
         Y_init = torch.cat(y_list, dim=0).reshape(-1, 1)
 
+        # ZoMBI hyperparameters: hyperparam_results_v2.json → best_so_far.config (MOBO eval 52)
         optimizer = ZoMBIHop(
             objective=objective_wrapper,
             bounds=bounds,
             X_init_actual=X_init_actual,
             X_init_expected=X_init_expected,
             Y_init=Y_init,
-            max_zooms=3,
-            max_iterations=4,
+            max_zooms=6,
+            max_iterations=12,
             top_m_points=max(dimensions + 1, 4),
-            n_restarts=50,
-            raw=500,
-            penalization_threshold=6.5e-5,
+            n_restarts=100,
+            raw=1323,
+            penalization_threshold=0.09156866488784367,
             penalty_num_directions=10 * dimensions,
-            penalty_max_radius=0.33633,
+            penalty_max_radius=0.16398949475603125,
             penalty_radius_step=None,
-            convergence_pi_threshold=4.8e-5,
+            convergence_pi_threshold=0.001,
             input_noise_threshold_mult=2.0,
             output_noise_threshold_mult=0.5,
             n_consecutive_converged=5,
             max_gp_points=3000,
             acquisition_type="ucb",
-            ucb_beta=0.1,
+            ucb_beta=0.6677950695897094,
+            nat_grad_step=0.024757059158665974,
+            nat_grad_max_steps=67,
             device=str(device),
             dtype=dtype,
             run_uuid=None,
             checkpoint_dir=str(checkpoint_dir),
-            max_checkpoints=50,
+            num_iterations_saved=50,
             verbose=True,
             needle_plot_points_ref=needle_plot_points,
         )
@@ -687,12 +841,14 @@ def run_zombi_main(resume_uuid: str | None = None):
             X_init_expected=None,
             Y_init=None,
             acquisition_type="ucb",
-            ucb_beta=0.1,
+            ucb_beta=0.6677950695897094,
+            nat_grad_step=0.024757059158665974,
+            nat_grad_max_steps=67,
             device=str(device),
             dtype=dtype,
             run_uuid=resume_uuid,
             checkpoint_dir=str(checkpoint_dir),
-            max_checkpoints=50,
+            num_iterations_saved=50,
             verbose=True,
             needle_plot_points_ref=needle_plot_points,
         )

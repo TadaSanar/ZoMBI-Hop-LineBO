@@ -1,16 +1,14 @@
 """Utility functions for ZoMBI-Hop."""
 
 from .simplex import (
-    sample_simplex,
-    project_to_simplex,
     is_on_simplex,
     simplex_distance,
     proj_simplex,
     random_simplex,
+    random_simplex_direction,
     random_zero_sum_directions,
     subset_sums_and_signs,
     polytope_volume,
-    barycentric_coordinates,
     composition_to_ilr,
     ilr_to_composition,
 )
@@ -29,16 +27,14 @@ from .dataclasses import ZoMBIHopConfig
 
 __all__ = [
     # Simplex utilities
-    "sample_simplex",
-    "project_to_simplex",
     "is_on_simplex",
     "simplex_distance",
     "proj_simplex",
     "random_simplex",
+    "random_simplex_direction",
     "random_zero_sum_directions",
     "subset_sums_and_signs",
     "polytope_volume",
-    "barycentric_coordinates",
     "composition_to_ilr",
     "ilr_to_composition",
     # Visualization
