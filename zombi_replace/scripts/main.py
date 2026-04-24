@@ -22,7 +22,6 @@ Checkpoints are saved automatically to: actual_runs/checkpoints/run_<uuid>/
 import os
 import multiprocessing
 import signal
-import threading
 import time
 import sys
 from pathlib import Path
@@ -63,16 +62,14 @@ def list_runs_and_exit():
                 print("  No checkpoints found")
 
 
-def start_serial(parent_shutdown: "multiprocessing.synchronize.Event"):
-    """Child process: opens COM; parent sets parent_shutdown to release the port."""
+def start_serial():
     try:
         start_serial_dual_io_shared_port(
             COM="COM5",
             baud=9600,
             obj_hz=1.0,
             comp_hz=1.0,
-            chaos=False,
-            parent_shutdown=parent_shutdown,
+            chaos=False
         )
     except Exception as e:
         print(f"[Serial Process] Error: {e}")
@@ -90,6 +87,11 @@ def start_zombi(resume_uuid=None):
     except Exception as e:
         print(f"[ZoMBI Process] Error: {e}")
         sys.exit(1)
+
+
+def signal_handler(signum, frame):
+    print(f"\n[Main] Received signal {signum}, shutting down processes...")
+    sys.exit(0)
 
 
 def main():
@@ -118,31 +120,8 @@ def main():
     else:
         print("[Main] Skipping database reset (resuming trial)")
 
-    shutdown = multiprocessing.Event()
-    p_serial: multiprocessing.Process | None = None
-    p_zombi: multiprocessing.Process | None = None
-
-    _interrupt_lock = threading.Lock()
-    _interrupt_seen = False
-
-    def _on_interrupt(signum, frame):
-        nonlocal _interrupt_seen
-        with _interrupt_lock:
-            if not _interrupt_seen:
-                _interrupt_seen = True
-                print(
-                    f"\n[Main] Signal {signum} — stopping ZoMBI, then releasing COM5…"
-                )
-            shutdown.set()
-
-    signal.signal(signal.SIGINT, _on_interrupt)
-    if hasattr(signal, "SIGBREAK"):
-        # Windows: Ctrl+Break
-        try:
-            signal.signal(signal.SIGBREAK, _on_interrupt)
-        except (AttributeError, OSError):
-            pass
-    signal.signal(signal.SIGTERM, _on_interrupt)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     try:
         initialize_db()
@@ -153,14 +132,9 @@ def main():
 
     multiprocessing.set_start_method("spawn", force=True)
 
-    p_serial = multiprocessing.Process(
-        target=start_serial,
-        args=(shutdown,),
-        name="SerialIO",
-    )
+    p_serial = multiprocessing.Process(target=start_serial, name="SerialIO")
     p_zombi = multiprocessing.Process(target=start_zombi, args=(resume_uuid,), name="ZoMBI")
 
-    zombi_finished_normally = False
     try:
         print("[Main] Starting serial communication process...")
         p_serial.start()
@@ -172,7 +146,7 @@ def main():
         print("[Main] Starting ZoMBI-Hop optimization process...")
         p_zombi.start()
 
-        while not shutdown.is_set():
+        while True:
             if not p_serial.is_alive():
                 print("[Main] Serial process died unexpectedly")
                 if p_zombi.is_alive():
@@ -182,66 +156,50 @@ def main():
                 break
 
             if not p_zombi.is_alive():
-                ex = p_zombi.exitcode
-                if ex == 0:
-                    zombi_finished_normally = True
-                print(
-                    f"[Main] ZoMBI process completed or died (exitcode={ex})"
-                )
+                print("[Main] ZoMBI process completed or died")
                 if p_serial.is_alive():
-                    print("[Main] Stopping serial process (release COM)...")
-                    shutdown.set()
-                    p_serial.join(timeout=12)
+                    print("[Main] Terminating serial process...")
+                    p_serial.terminate()
+                    p_serial.join(timeout=5)
                 break
 
-            shutdown.wait(timeout=0.5)
+            time.sleep(1)
 
     except KeyboardInterrupt:
-        with _interrupt_lock:
-            if not _interrupt_seen:
-                _interrupt_seen = True
-                print("\n[Main] KeyboardInterrupt — stopping ZoMBI, then releasing COM5…")
-        shutdown.set()
+        print("\n[Main] KeyboardInterrupt received, shutting down...")
     except Exception as e:
         print(f"[Main] Unexpected error: {e}")
     finally:
         print("[Main] Cleaning up processes...")
 
-        if not shutdown.is_set():
-            shutdown.set()
+        if p_serial.is_alive():
+            print("[Main] Terminating serial process...")
+            p_serial.terminate()
+            p_serial.join(timeout=5)
+            if p_serial.is_alive():
+                print("[Main] Force killing serial process...")
+                p_serial.kill()
 
-        # 1) Stop ZoMBI first: it can block in CUDA / LineBO / sqlite while the serial
-        #    process is light. Waiting on serial before killing ZoMBI caused hangs.
-        if p_zombi is not None and p_zombi.is_alive():
-            print("[Main] Terminating ZoMBI process…")
+        try:
+            import serial
+            port_name = "COM5"
+            try:
+                s = serial.Serial(port_name)
+                if s.is_open:
+                    print(f"[Main] Closing serial port {port_name}...")
+                    s.close()
+            except Exception as e:
+                print(f"[Main] Could not close port {port_name}: {e}")
+        except Exception as e:
+            print(f"[Main] Serial port cleanup skipped or failed: {e}")
+
+        if p_zombi.is_alive():
+            print("[Main] Terminating ZoMBI process...")
             p_zombi.terminate()
             p_zombi.join(timeout=5)
-        if p_zombi is not None and p_zombi.is_alive():
-            print("[Main] Force killing ZoMBI process…")
-            p_zombi.kill()
-            p_zombi.join(timeout=3)
-
-        # 2) Serial child releases COM (parent must not open the port)
-        if p_serial is not None and p_serial.is_alive():
-            print("[Main] Waiting for serial process to release COM5…")
-            p_serial.join(timeout=15)
-        if p_serial is not None and p_serial.is_alive():
-            print("[Main] Serial did not exit in time — terminating…")
-            p_serial.terminate()
-            p_serial.join(timeout=4)
-        if p_serial is not None and p_serial.is_alive():
-            p_serial.kill()
-            p_serial.join(timeout=2)
-
-        # 2) If we did not finish a full ZoMBI run, clear handshake + stale objective rows so
-        #    the next `python -m scripts.main` can send a new proposed line and not block on
-        #    a half-finished get_y wait (skip this after a normal zombi completion).
-        if not zombi_finished_normally:
-            try:
-                communication.clear_in_flight_objective_state()
-                print("[Main] Objective DB + handshake reset for a clean next run (new line proposal).")
-            except Exception as e:
-                print(f"[Main] Note: could not clear objective handshake: {e}")
+            if p_zombi.is_alive():
+                print("[Main] Force killing ZoMBI process...")
+                p_zombi.kill()
 
         print("[Main] Cleanup complete")
 

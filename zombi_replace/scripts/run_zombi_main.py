@@ -38,30 +38,8 @@ NUM_EXPERIMENTS = 24
 NUM_INIT_DATA = 2
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ARCHERFISH MODULES TO PRINT AND OPTIMIZE FROM
+# Database interfacing settings
 OPTIMIZING_DIMS = [0, 8, 9]
-
-# LineBO + ZoMBI-Hop maximize internal Y. True ⇒ treat hardware/DB y as a cost
-# to minimize (we negate for the GP; plots/logs show measured y).
-MINIMIZE_OBJECTIVE = True
-
-
-def y_measured_to_optimizer(y: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
-    """Map apparatus / DB y to the value the GP + acquisition maximize."""
-    if not MINIMIZE_OBJECTIVE:
-        return y
-    if isinstance(y, torch.Tensor):
-        return -y
-    return -np.asarray(y, dtype=np.float64)
-
-
-def y_optimizer_to_measured(y: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
-    """Inverse: internal (max) y → physical measured y for plots and logs."""
-    if not MINIMIZE_OBJECTIVE:
-        return y
-    if isinstance(y, torch.Tensor):
-        return -y
-    return -np.asarray(y, dtype=np.float64)
 
 _SQRT3_2 = np.sqrt(3) / 2
 
@@ -156,18 +134,17 @@ def update_live_plots(
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
         ax3 = None
 
-    _mode = "minimize" if MINIMIZE_OBJECTIVE else "maximize"
-    fig.suptitle(f"ZoMBI-Hop live ({_mode} measured y)")
+    fig.suptitle("ZoMBI-Hop live")
     ax1.set_xlabel("Sample number")
-    ax1.set_ylabel("Measured objective")
-    ax1.set_title("Measured objective vs sample number")
+    ax1.set_ylabel("Objective value")
+    ax1.set_title("Objective value vs sample number")
     ax1.plot(all_sample_num, all_y, "b.-", markersize=4, alpha=0.7, zorder=1)
     sc1 = ax1.scatter(all_sample_num, all_y, c=y_arr, cmap="viridis", s=25, ec="k", lw=0.25, zorder=2, vmin=y_min, vmax=y_max)
-    fig.colorbar(sc1, ax=ax1, label="Measured objective", fraction=0.046, pad=0.02)
+    fig.colorbar(sc1, ax=ax1, label="Objective", fraction=0.046, pad=0.02)
 
     ax2.set_xlabel("Distance from center of mass")
-    ax2.set_ylabel("Measured objective")
-    ax2.set_title("Measured objective vs distance from center")
+    ax2.set_ylabel("Objective value")
+    ax2.set_title("Objective value vs distance from center")
     iteration_order = np.arange(n_pts)
     scatter_ax2 = ax2.scatter(
         distances,
@@ -181,26 +158,24 @@ def update_live_plots(
         vmin=y_min,
         vmax=y_max,
     )
-    fig.colorbar(scatter_ax2, ax=ax2, label="Measured objective", fraction=0.046, pad=0.02)
+    fig.colorbar(scatter_ax2, ax=ax2, label="Objective", fraction=0.046, pad=0.02)
 
     if needle_plot_points:
         for n in needle_plot_points:
-            # Needle y from ZoMBI is in optimizer (max) space; plot measured y
-            ny = float(y_optimizer_to_measured(n["y"]))
-            ax1.scatter(n["sample_idx"], ny, marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
-            ax2.scatter(n["distance"], ny, marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
+            ax1.scatter(n["sample_idx"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
+            ax2.scatter(n["distance"], n["y"], marker="*", s=200, c="gold", zorder=5, edgecolors="darkgoldenrod")
 
     if use_ternary and ax3 is not None:
         labels = tuple(f"dim {i}" for i in OPTIMIZING_DIMS)
         _draw_ternary_frame(ax3, labels)
-        ax3.set_title("Composition (ternary) — points colored by measured objective")
+        ax3.set_title("Composition (ternary) — points colored by objective")
 
         Xn = normalize_last_axis(X)
         xy = _composition_to_ternary_xy(Xn)
         sc3 = ax3.scatter(
             xy[:, 0], xy[:, 1], c=y_arr, cmap="viridis", s=28, ec="k", lw=0.3, zorder=3, vmin=y_min, vmax=y_max
         )
-        fig.colorbar(sc3, ax=ax3, label="Measured objective", fraction=0.046, pad=0.02)
+        fig.colorbar(sc3, ax=ax3, label="Objective", fraction=0.046, pad=0.02)
 
         if suggested_lines:
             line_styles = [("-", "C0", 2.0), ("--", "C1", 2.0)]
@@ -243,7 +218,7 @@ def log_iteration(
     x_actual: torch.Tensor,
     y: torch.Tensor,
 ) -> None:
-    """Log candidate, best two endpoints from LineBO, and resultant expected, actual, y (measured) to terminal."""
+    """Log candidate, best two endpoints from LineBO, and resultant expected, actual, y to terminal."""
     print("\n" + "=" * 60)
     print("[ITERATION LOG]")
     print("  candidate (x_tell):", candidate.cpu().numpy().tolist())
@@ -266,12 +241,7 @@ def log_iteration(
     if len(x_act) > 3:
         print("    ... (%d points)" % len(x_act))
     y_flat = y.cpu().numpy().ravel()
-    _tag = "measured (minimize)" if MINIMIZE_OBJECTIVE else "measured (maximize)"
-    y_print = y.reshape(-1)
-    print(
-        f"  y ({_tag}):",
-        y_print.tolist() if len(y_print) <= 12 else y_print[:6].tolist() + ["..."] + y_print[-6:].tolist(),
-    )
+    print("  y (objective values):", y_flat.tolist() if len(y_flat) <= 12 else y_flat[:6].tolist() + ["..."] + y_flat[-6:].tolist())
     print("=" * 60 + "\n")
 
 
@@ -483,6 +453,10 @@ def objective(
     cache_right_norm = _pad_to_10d(normalize_last_axis(np.round(line_1_right, 3)))[0]
     x_cache_norm = _pad_to_10d(normalize_last_axis(np.round(x_cache, 3)))
 
+    # Clear objective DB and handshake BEFORE sending compositions so that any
+    # data the apparatus sends immediately in response is never wiped by the reset.
+    if ready_for_objectives:
+        communication.reset_objective()
     communication.write_compositions(
         start=left_norm,
         end=right_norm,
@@ -492,19 +466,14 @@ def objective(
         array_cache=x_cache_norm,
         timestamp=time.time(),
     )
-    # When waiting for apparatus: clear objective DB and handshake *after* sending compositions
-    # so we only accept data that arrives in response to this request (avoids re-reading stale data on resume).
-    if ready_for_objectives:
-        communication.reset_objective()
     y_all, x_meas_all = get_y_measurements(
         np.vstack([x_main, x_cache]), verbose=True, ready_for_objectives=ready_for_objectives
     )
     x_meas_main = x_meas_all[:num_experiments].astype(np.float64)
     y_main = np.asarray(y_all[:num_experiments]).ravel().astype(np.float64)
-    y_for_gp = y_measured_to_optimizer(y_main)
     return (
         torch.tensor(x_meas_main, device=device, dtype=dtype),
-        torch.tensor(y_for_gp, device=device, dtype=dtype),
+        torch.tensor(y_main, device=device, dtype=dtype),
     )
 
 
@@ -521,7 +490,6 @@ def linebo_sampler_wrapper(
     and makes them available to all logging (live plots + log_iteration).
     If resume_plot_data is provided (e.g. when resuming a job), prefill plot lists and redraw.
     needle_plot_points: mutable list of {sample_idx, y, distance} for needle stars on the plot.
-    Stored y is optimizer (max) space; live lists use measured y for display.
     """
     if needle_plot_points is None:
         needle_plot_points = []
@@ -537,8 +505,7 @@ def linebo_sampler_wrapper(
     if resume_plot_data is not None:
         sample_nums, y_vals, x_actuals = resume_plot_data
         all_sample_num.extend(sample_nums)
-        for v in y_vals:
-            all_y.append(float(y_optimizer_to_measured(v)))
+        all_y.extend(y_vals)
         all_x_actual.extend(x_actuals)
         # Show once with loaded history (and needles if any)
         if _HAS_MPL and all_y:
@@ -557,8 +524,7 @@ def linebo_sampler_wrapper(
         x_requested, x_actual, y = linebo.sampler(x_tell, bounds, acquisition_function)
         y_flat = y.reshape(-1)
         x_act_np = x_actual.cpu().numpy()
-        y_meas = y_optimizer_to_measured(y_flat)
-        y_plot_np = y_meas.detach().cpu().numpy()
+        y_np = y_flat.cpu().numpy()
         suggested: List[Tuple[np.ndarray, np.ndarray]] | None = None
         if endpoints_log_ref:
             try:
@@ -569,11 +535,11 @@ def linebo_sampler_wrapper(
             except KeyError:
                 suggested = None
         update_live_plots(
-            fig_ref, all_sample_num, all_y, all_x_actual, x_act_np, y_plot_np,
+            fig_ref, all_sample_num, all_y, all_x_actual, x_act_np, y_np,
             needle_plot_points=needle_plot_points,
             suggested_lines=suggested,
         )
-        log_iteration(x_tell, endpoints_log_ref, x_requested, x_actual, y_meas)
+        log_iteration(x_tell, endpoints_log_ref, x_requested, x_actual, y_flat)
         return x_requested, x_actual, y_flat
 
     return wrapper
@@ -792,10 +758,6 @@ def run_zombi_main(resume_uuid: str | None = None):
         print("=" * 80)
         print(f"Dimensions: {dimensions} (from OPTIMIZING_DIMS: {OPTIMIZING_DIMS})")
         print(f"Device: {device}")
-        if MINIMIZE_OBJECTIVE:
-            print("Objective: minimize measured y (LineBO+ZoMBI maximize -y internally).")
-        else:
-            print("Objective: maximize measured y.")
         print("=" * 80 + "\n")
 
         print("Generating initial data via database...")
@@ -839,17 +801,13 @@ def run_zombi_main(resume_uuid: str | None = None):
             X_init_expected=X_init_expected,
             Y_init=Y_init,
             max_zooms=6,
-            max_iterations=12,
-            # max_iterations=4,
+            # max_iterations=12,
+            max_iterations=4,
             top_m_points=max(dimensions + 1, 4),
             n_restarts=100,
             raw=1323,
-            penalization_threshold=0.09156866488784367,
-            penalty_num_directions=10 * dimensions,
-            penalty_max_radius=0.16398949475603125,
-            penalty_radius_step=None,
-            convergence_pi_threshold=0.001,
-            # convergence_pi_threshold=-float("inf"),
+            # convergence_pi_threshold=0.001,
+            convergence_pi_threshold=-float("inf"),
             input_noise_threshold_mult=2.0,
             output_noise_threshold_mult=0.5,
             n_consecutive_converged=5,
@@ -899,8 +857,6 @@ def run_zombi_main(resume_uuid: str | None = None):
 
     print("=" * 80)
     print("STARTING OPTIMIZATION")
-    if MINIMIZE_OBJECTIVE:
-        print("Mode: minimization of measured objective (set MINIMIZE_OBJECTIVE = False to maximize).")
     print("=" * 80 + "\n")
 
     optimizer.run(max_activations=float("inf"), time_limit_hours=None)

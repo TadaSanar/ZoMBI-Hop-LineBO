@@ -34,8 +34,7 @@ class DataHandler:
     Parameters
     ----------
     max_zooms, max_iterations, top_m_points, n_restarts, raw,
-    penalization_threshold, penalty_num_directions, penalty_max_radius,
-    penalty_radius_step, convergence_pi_threshold, input_noise_threshold_mult,
+    convergence_pi_threshold, input_noise_threshold_mult,
     output_noise_threshold_mult, n_consecutive_converged, max_gp_points,
     repulsion_lambda, acquisition_type, ucb_beta, nat_grad_step,
     nat_grad_max_steps : control variables
@@ -63,10 +62,6 @@ class DataHandler:
         top_m_points: Optional[int] = None,
         n_restarts: int = 30,
         raw: int = 500,
-        penalization_threshold: float = 1e-3,
-        penalty_num_directions: Optional[int] = None,
-        penalty_max_radius: float = 0.3,
-        penalty_radius_step: Optional[float] = None,
         convergence_pi_threshold: float = 0.01,
         input_noise_threshold_mult: float = 2.0,
         output_noise_threshold_mult: float = 2.0,
@@ -85,6 +80,10 @@ class DataHandler:
         # --- Compute settings ---
         device: str = 'cuda',
         dtype: torch.dtype = torch.float64,
+        # --- Over-penalization escape hatch ---
+        old_needle_radius_mult: float = 3.0,
+        retry_raw_scale: float = 2.0,
+        retry_step_scale: float = 0.5,
         # --- Backward compat ---
         config: Optional[Union[ZoMBIHopConfig, Dict[str, Any]]] = None,
         d: Optional[int] = None,
@@ -98,11 +97,6 @@ class DataHandler:
                 top_m_points = cfg.top_m_points
             n_restarts = cfg.n_restarts
             raw = cfg.raw
-            penalization_threshold = cfg.penalization_threshold
-            if cfg.penalty_num_directions is not None:
-                penalty_num_directions = cfg.penalty_num_directions
-            penalty_max_radius = cfg.penalty_max_radius
-            penalty_radius_step = cfg.penalty_radius_step
             convergence_pi_threshold = cfg.convergence_pi_threshold
             input_noise_threshold_mult = cfg.input_noise_threshold_mult
             output_noise_threshold_mult = cfg.output_noise_threshold_mult
@@ -120,10 +114,6 @@ class DataHandler:
         self.top_m_points = top_m_points
         self.n_restarts = n_restarts
         self.raw = raw
-        self.penalization_threshold = penalization_threshold
-        self.penalty_num_directions = penalty_num_directions
-        self.penalty_max_radius = penalty_max_radius
-        self.penalty_radius_step = penalty_radius_step
         self.convergence_pi_threshold = convergence_pi_threshold
         self.input_noise_threshold_mult = input_noise_threshold_mult
         self.output_noise_threshold_mult = output_noise_threshold_mult
@@ -134,6 +124,11 @@ class DataHandler:
         self.ucb_beta = ucb_beta
         self.nat_grad_step = nat_grad_step
         self.nat_grad_max_steps = nat_grad_max_steps
+
+        # Over-penalization escape hatch params
+        self.old_needle_radius_mult = old_needle_radius_mult
+        self.retry_raw_scale = retry_raw_scale
+        self.retry_step_scale = retry_step_scale
 
         # Compute settings
         self.device = torch.device(device)
@@ -193,6 +188,20 @@ class DataHandler:
         self.needle_penalty_radii: Optional[torch.Tensor] = None
         self.needles_results: List[Dict[str, Any]] = []
 
+        # Per-needle ellipsoid parameters (None entry = fall back to sphere radius).
+        # needle_B is shared across all needles (same simplex tangent space).
+        self.needle_M_list: List[Optional[torch.Tensor]] = []  # each (d-1, d-1)
+        self.needle_B: Optional[torch.Tensor] = None           # (d, d-1)
+
+        # Old needles: converted from regular needles when an activation fails to
+        # converge. They use uniform-sphere penalisation of radius
+        # old_needle_radius_mult * input_noise, and are treated as boundary
+        # constraints (not exclusion zones) during hyperrectangle computation.
+        self.old_needles: Optional[torch.Tensor] = None        # (k, d)
+        self.old_needle_vals: Optional[torch.Tensor] = None    # (k, 1)
+        self.old_needle_radii: Optional[torch.Tensor] = None   # (k, 1)
+        self.old_needle_radius_mult: float = 3.0               # configurable
+
         self._penalty_mask: Optional[torch.Tensor] = None
 
         # Iteration state
@@ -214,15 +223,13 @@ class DataHandler:
         """
         Set up data storage with initial observations.
         Call once before optimization starts (not needed when resuming).
-        Auto-computes top_m_points and penalty_num_directions if not already set.
+        Auto-computes top_m_points if not already set.
         """
         self.d = X_init_actual.shape[1]
         self.bounds = bounds.clone().to(device=self.device, dtype=self.dtype)
 
         if self.top_m_points is None:
             self.top_m_points = max(self.d + 1, 4)
-        if self.penalty_num_directions is None:
-            self.penalty_num_directions = 10 * self.d
 
         self.X_init_actual = X_init_actual.clone().to(device=self.device, dtype=self.dtype)
         self.X_init_expected = X_init_expected.clone().to(device=self.device, dtype=self.dtype)
@@ -236,6 +243,8 @@ class DataHandler:
         self.needle_vals = torch.empty((0, 1), device=self.device, dtype=self.dtype)
         self.needle_indices = torch.empty((0, 1), device=self.device, dtype=torch.int64)
         self.needle_penalty_radii = torch.empty((0, 1), device=self.device, dtype=self.dtype)
+        self.needle_M_list = []
+        self.needle_B = None
 
         self._update_penalty_mask()
 
@@ -253,10 +262,6 @@ class DataHandler:
             'top_m_points': self.top_m_points,
             'n_restarts': self.n_restarts,
             'raw': self.raw,
-            'penalization_threshold': self.penalization_threshold,
-            'penalty_num_directions': self.penalty_num_directions,
-            'penalty_max_radius': self.penalty_max_radius,
-            'penalty_radius_step': self.penalty_radius_step,
             'convergence_pi_threshold': self.convergence_pi_threshold,
             'input_noise_threshold_mult': self.input_noise_threshold_mult,
             'output_noise_threshold_mult': self.output_noise_threshold_mult,
@@ -277,15 +282,32 @@ class DataHandler:
     # Snapshotting (new, simple system)
     # =========================================================================
 
-    def take_snapshot(self, label: str = "", permanent: bool = False):
+    def take_snapshot(
+        self,
+        label: str = "",
+        permanent: bool = False,
+        activation: Optional[int] = None,
+        zoom: Optional[int] = None,
+        iteration: Optional[int] = None,
+    ):
         """
         Save complete state to disk.
+
+        Optionally updates current_activation/zoom/iteration before saving so
+        a single call replaces the old update_iteration_state + take_snapshot pair.
 
         Saves all tensors, needle results, iteration state, and a summary.
         Snapshots are numbered sequentially under run_dir/snapshots/.
         Removes oldest non-permanent snapshots if max_snapshots is set.
         Permanent snapshots are never cleaned up.
         """
+        if activation is not None:
+            self.current_activation = activation
+        if zoom is not None:
+            self.current_zoom = zoom
+        if iteration is not None:
+            self.current_iteration = iteration
+
         if not self.save_enabled:
             return
 
@@ -296,6 +318,30 @@ class DataHandler:
 
         if permanent:
             (snapshot_dir / 'permanent').touch()
+
+        # Serialise ellipsoid M matrices (list of Optional tensors) as a stacked
+        # tensor + boolean has_M flag so None entries survive serialisation.
+        if self.needle_M_list:
+            # Infer (d-1) from first non-None entry or from needle_B
+            dm1 = None
+            for m in self.needle_M_list:
+                if m is not None:
+                    dm1 = m.shape[0]; break
+            if dm1 is None and self.needle_B is not None:
+                dm1 = self.needle_B.shape[1]
+            if dm1 is None:
+                dm1 = max(self.d - 1, 1)
+            needle_has_M = torch.tensor(
+                [m is not None for m in self.needle_M_list], dtype=torch.bool, device=self.device
+            )
+            needle_M_stack = torch.stack([
+                m.to(device=self.device, dtype=self.dtype) if m is not None
+                else torch.zeros(dm1, dm1, device=self.device, dtype=self.dtype)
+                for m in self.needle_M_list
+            ], dim=0)
+        else:
+            needle_has_M = torch.zeros(0, dtype=torch.bool, device=self.device)
+            needle_M_stack = torch.zeros(0, 1, 1, device=self.device, dtype=self.dtype)
 
         # All tensors in one file
         torch.save({
@@ -311,6 +357,12 @@ class DataHandler:
             'needle_vals': self.needle_vals,
             'needle_indices': self.needle_indices,
             'needle_penalty_radii': self.needle_penalty_radii,
+            'needle_M_stack': needle_M_stack,
+            'needle_has_M': needle_has_M,
+            'needle_B': self.needle_B,
+            'old_needles': self.old_needles,
+            'old_needle_vals': self.old_needle_vals,
+            'old_needle_radii': self.old_needle_radii,
             'penalty_mask': self._penalty_mask,
         }, snapshot_dir / 'tensors.pt')
 
@@ -394,10 +446,6 @@ class DataHandler:
             self.top_m_points = cfg.get('top_m_points', self.top_m_points)
             self.n_restarts = cfg.get('n_restarts', self.n_restarts)
             self.raw = cfg.get('raw', self.raw)
-            self.penalization_threshold = cfg.get('penalization_threshold', self.penalization_threshold)
-            self.penalty_num_directions = cfg.get('penalty_num_directions', self.penalty_num_directions)
-            self.penalty_max_radius = cfg.get('penalty_max_radius', self.penalty_max_radius)
-            self.penalty_radius_step = cfg.get('penalty_radius_step', self.penalty_radius_step)
             self.convergence_pi_threshold = cfg.get('convergence_pi_threshold', self.convergence_pi_threshold)
             self.input_noise_threshold_mult = cfg.get('input_noise_threshold_mult', self.input_noise_threshold_mult)
             self.output_noise_threshold_mult = cfg.get('output_noise_threshold_mult', self.output_noise_threshold_mult)
@@ -512,6 +560,30 @@ class DataHandler:
         self.needle_penalty_radii = tensors['needle_penalty_radii'].to(device=self.device, dtype=self.dtype)
         self._penalty_mask = tensors['penalty_mask'].to(device=self.device)
 
+        # Restore ellipsoid data (absent in old checkpoints → safe defaults)
+        needle_M_stack = tensors.get('needle_M_stack', None)
+        needle_has_M = tensors.get('needle_has_M', None)
+        if needle_M_stack is not None and needle_has_M is not None and needle_has_M.numel() > 0:
+            needle_M_stack = needle_M_stack.to(device=self.device, dtype=self.dtype)
+            needle_has_M = needle_has_M.to(device=self.device)
+            self.needle_M_list = [
+                needle_M_stack[i].clone() if needle_has_M[i].item() else None
+                for i in range(needle_has_M.shape[0])
+            ]
+        else:
+            self.needle_M_list = [None] * self.needles.shape[0]
+
+        nb = tensors.get('needle_B', None)
+        self.needle_B = nb.to(device=self.device, dtype=self.dtype) if nb is not None else None
+
+        # Restore old_needles (absent in old checkpoints → empty)
+        on = tensors.get('old_needles', None)
+        self.old_needles = on.to(device=self.device, dtype=self.dtype) if on is not None else None
+        onv = tensors.get('old_needle_vals', None)
+        self.old_needle_vals = onv.to(device=self.device, dtype=self.dtype) if onv is not None else None
+        onr = tensors.get('old_needle_radii', None)
+        self.old_needle_radii = onr.to(device=self.device, dtype=self.dtype) if onr is not None else None
+
     def _load_needles_json(self, path: Path):
         """Load needle results from a JSON file (handles both old and new key names)."""
         if not path.exists():
@@ -583,8 +655,14 @@ class DataHandler:
         activation: int,
         zoom: int,
         iteration: int,
+        M: Optional[torch.Tensor] = None,
+        B: Optional[torch.Tensor] = None,
     ):
-        """Record a discovered needle (local optimum) and update penalty mask."""
+        """Record a discovered needle (local optimum) and update penalty mask.
+
+        If M and B are provided (the tangent-space Hessian ellipsoid), they are
+        stored and used for the ellipsoid penalty mask instead of the sphere.
+        """
         needle = needle.to(device=self.device, dtype=self.dtype)
 
         distances = torch.norm(self.X_all_actual - needle.unsqueeze(0), dim=1)
@@ -600,6 +678,11 @@ class DataHandler:
             self.needle_penalty_radii,
             torch.tensor([[needle_penalty_radius]], device=self.device, dtype=self.dtype),
         ], dim=0)
+
+        # Store ellipsoid (or None for sphere fallback)
+        self.needle_M_list.append(M.to(device=self.device, dtype=self.dtype) if M is not None else None)
+        if B is not None:
+            self.needle_B = B.to(device=self.device, dtype=self.dtype)
 
         self.needles_results.append({
             'point': needle.clone(),
@@ -623,6 +706,10 @@ class DataHandler:
         """Return (needles, penalty_radii) tensors."""
         return self.needles, self.needle_penalty_radii
 
+    def get_needle_ellipsoids(self) -> Tuple[List[Optional[torch.Tensor]], Optional[torch.Tensor]]:
+        """Return (needle_M_list, needle_B) for use in RepulsiveAcquisition."""
+        return self.needle_M_list, self.needle_B
+
     # =========================================================================
     # Penalty mask
     # =========================================================================
@@ -634,32 +721,51 @@ class DataHandler:
         return self._compute_penalty_mask(X)
 
     def _compute_penalty_mask(self, X: torch.Tensor) -> torch.Tensor:
-        """Compute penalty mask for given points. True = not inside any penalty ball."""
-        if X.ndim == 2:
-            X_reshaped = X.unsqueeze(1)
+        """Compute penalty mask for given points. True = not inside any penalty region.
+
+        For needles with an ellipsoid (M, B): uses u^T M u <= 1 membership test.
+        For needles with only a radius: uses Euclidean sphere test.
+        Also applies sphere tests for old_needles (if any).
+        """
+        is_2d = X.ndim == 2
+        if is_2d:
             n = X.shape[0]
-            l = 1
+            X_flat = X  # (n, d)
         elif X.ndim == 3:
-            X_reshaped = X
-            n, l, _ = X.shape
+            n, l, d_x = X.shape
+            X_flat = X.reshape(-1, d_x)
         else:
             raise ValueError(f"X must be 2D or 3D, got shape {X.shape}")
 
-        if self.needles is None or self.needles.shape[0] == 0:
-            if X.ndim == 2:
-                return torch.ones(n, dtype=torch.bool, device=X.device)
-            else:
-                return torch.ones((n, l), dtype=torch.bool, device=X.device)
+        num_pts = X_flat.shape[0]
+        penalized = torch.zeros(num_pts, dtype=torch.bool, device=X.device)
 
-        X_expanded = X_reshaped.unsqueeze(2)                       # (n, l, 1, d)
-        needles_expanded = self.needles.unsqueeze(0).unsqueeze(0)  # (1, 1, M, d)
-        radii_expanded = self.needle_penalty_radii.view(1, 1, -1)  # (1, 1, M)
+        # --- Regular needles ---
+        if self.needles is not None and self.needles.shape[0] > 0:
+            for idx in range(self.needles.shape[0]):
+                needle = self.needles[idx]  # (d,)
+                diff = X_flat - needle.unsqueeze(0)  # (num_pts, d)
 
-        distances = torch.norm(X_expanded - needles_expanded, dim=-1)  # (n, l, M)
-        penalized = (distances <= radii_expanded).any(dim=2)            # (n, l)
+                M = self.needle_M_list[idx] if idx < len(self.needle_M_list) else None
+                if M is not None and self.needle_B is not None:
+                    u = diff @ self.needle_B           # (num_pts, d-1)
+                    quad = (u @ M * u).sum(dim=-1)     # (num_pts,)
+                    inside = quad <= 1.0
+                else:
+                    r = self.needle_penalty_radii[idx].squeeze()
+                    inside = torch.norm(diff, dim=-1) <= r
+                penalized = penalized | inside
 
-        if X.ndim == 2:
-            penalized = penalized.squeeze(1)
+        # --- Old needles (sphere only) ---
+        if self.old_needles is not None and self.old_needles.shape[0] > 0:
+            old_diff = X_flat.unsqueeze(1) - self.old_needles.unsqueeze(0)  # (num_pts, k, d)
+            old_dist = torch.norm(old_diff, dim=-1)                          # (num_pts, k)
+            old_radii = self.old_needle_radii.view(1, -1)                    # (1, k)
+            old_inside = (old_dist <= old_radii).any(dim=1)                  # (num_pts,)
+            penalized = penalized | old_inside
+
+        if not is_2d:
+            penalized = penalized.reshape(n, l)
 
         return ~penalized
 
@@ -713,6 +819,135 @@ class DataHandler:
         top_idx = torch.topk(Y_masked, k).indices
         X_top = self.X_all_actual[self._penalty_mask][top_idx]
         return torch.stack([X_top.min(dim=0).values, X_top.max(dim=0).values], dim=0)
+
+    # =========================================================================
+    # Over-penalization escape hatch
+    # =========================================================================
+
+    def move_needles_to_old(self):
+        """
+        Demote all current needles to 'old_needles' with uniform sphere radius
+        old_needle_radius_mult * input_noise, then reset the regular needle lists.
+
+        Old needles:
+        - Still act as exclusion zones in _compute_penalty_mask (sphere).
+        - Are treated as boundary constraints (not exclusion zones) in
+          determine_new_bounds_constrained.
+        """
+        if self.needles is None or self.needles.shape[0] == 0:
+            return
+
+        sigma = self.get_input_noise()
+        r = self.old_needle_radius_mult * sigma
+
+        r_tensor = torch.full(
+            (self.needles.shape[0], 1), r, device=self.device, dtype=self.dtype
+        )
+
+        if self.old_needles is None:
+            self.old_needles = self.needles.clone()
+            self.old_needle_vals = self.needle_vals.clone()
+            self.old_needle_radii = r_tensor
+        else:
+            self.old_needles = torch.cat([self.old_needles, self.needles], dim=0)
+            self.old_needle_vals = torch.cat([self.old_needle_vals, self.needle_vals], dim=0)
+            self.old_needle_radii = torch.cat([self.old_needle_radii, r_tensor], dim=0)
+
+        # Reset regular needles
+        self.needles = torch.empty((0, self.d), device=self.device, dtype=self.dtype)
+        self.needle_vals = torch.empty((0, 1), device=self.device, dtype=self.dtype)
+        self.needle_indices = torch.empty((0, 1), device=self.device, dtype=torch.int64)
+        self.needle_penalty_radii = torch.empty((0, 1), device=self.device, dtype=self.dtype)
+        self.needle_M_list = []
+        self.needles_results = []
+
+        self._update_penalty_mask()
+
+    def determine_new_bounds_constrained(
+        self,
+        converged_point: torch.Tensor,
+        global_bounds: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Largest axis-aligned hyperrectangle R containing *converged_point* such that:
+
+        1. R does not intersect any regular-needle ellipsoid (or sphere fallback).
+        2. No old_needle is strictly interior to R (may sit on boundary or outside).
+
+        Algorithm (per-dimension, O(n_needles * d)):
+        - Initialise lo[i] = 0, hi[i] = 1 (clamped to global_bounds if given).
+        - For each regular needle, compute its axis-aligned bounding box (AABB).
+          If the needle AABB overlaps the converged_point's side, tighten the bound.
+        - For each old_needle that is strictly interior, tighten the bound in the
+          dimension with the smallest margin to push it to the boundary.
+
+        Parameters
+        ----------
+        converged_point : torch.Tensor  shape (d,)
+        global_bounds   : torch.Tensor  shape (2, d) or None (defaults to [0,1]^d)
+        """
+        d = converged_point.shape[0]
+        cp = converged_point.to(device=self.device, dtype=self.dtype)
+
+        if global_bounds is not None:
+            lo = global_bounds[0].clone().to(device=self.device, dtype=self.dtype)
+            hi = global_bounds[1].clone().to(device=self.device, dtype=self.dtype)
+        else:
+            lo = torch.zeros(d, device=self.device, dtype=self.dtype)
+            hi = torch.ones(d, device=self.device, dtype=self.dtype)
+
+        # --- Constraint 1: exclude regular-needle ellipsoids / spheres ---
+        if self.needles is not None and self.needles.shape[0] > 0:
+            for idx in range(self.needles.shape[0]):
+                needle = self.needles[idx]  # (d,)
+                M = self.needle_M_list[idx] if idx < len(self.needle_M_list) else None
+
+                if M is not None and self.needle_B is not None:
+                    # AABB extent in each dim: sqrt((B M^{-1} B^T)[i,i])
+                    M_inv = torch.linalg.inv(M)
+                    amb_cov = self.needle_B @ M_inv @ self.needle_B.T  # (d, d)
+                    extent = torch.sqrt(torch.clamp(torch.diag(amb_cov), min=0.0))
+                else:
+                    r = self.needle_penalty_radii[idx].squeeze()
+                    extent = r.expand(d)
+
+                n_lo = needle - extent   # AABB lower
+                n_hi = needle + extent   # AABB upper
+
+                for i in range(d):
+                    if cp[i] < n_lo[i]:
+                        # converged_point is BELOW the AABB → tighten hi[i]
+                        hi[i] = torch.min(hi[i], n_lo[i])
+                    elif cp[i] > n_hi[i]:
+                        # converged_point is ABOVE the AABB → tighten lo[i]
+                        lo[i] = torch.max(lo[i], n_hi[i])
+                    # else: converged_point is inside AABB — no feasible constraint
+                    # in this dimension; leave bounds as-is (AABB is approximate)
+
+        # --- Constraint 2: old_needles must not be strictly interior ---
+        if self.old_needles is not None and self.old_needles.shape[0] > 0:
+            for k_idx in range(self.old_needles.shape[0]):
+                on = self.old_needles[k_idx]  # (d,)
+                # Check if strictly interior
+                if torch.all((lo < on) & (on < hi)):
+                    # Find dimension with smallest margin (cheapest to tighten)
+                    margin_lo = on - lo   # how far from lower bound
+                    margin_hi = hi - on   # how far from upper bound
+                    # Stack: row 0 = push lower up, row 1 = push upper down
+                    margins = torch.stack([margin_lo, margin_hi], dim=0)  # (2, d)
+                    min_margin, dim_idx = margins.min(dim=1)  # per direction
+                    best_dir = min_margin.argmin().item()  # 0 or 1
+                    best_dim = dim_idx[best_dir].item()
+                    if best_dir == 0:
+                        lo[best_dim] = on[best_dim]  # push lower bound up to old_needle
+                    else:
+                        hi[best_dim] = on[best_dim]  # push upper bound down to old_needle
+
+        # Ensure converged_point is still inside (clamp lo/hi to cp)
+        lo = torch.min(lo, cp)
+        hi = torch.max(hi, cp)
+
+        return torch.stack([lo, hi], dim=0)
 
     # =========================================================================
     # Input noise helpers

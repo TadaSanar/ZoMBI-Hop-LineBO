@@ -10,7 +10,6 @@ import atexit
 import sys
 import os
 import signal
-from typing import Any, Optional
 
 # Global flag for graceful shutdown
 _shutdown_flag = threading.Event()
@@ -28,21 +27,14 @@ _objective_writing = False
 _last_objective_vals = None
 _last_objective_comps = None
 
-
-def _serial_process_signal_handler(signum, frame):
-    """Only used in the dedicated serial I/O process (not at import: avoids every child
-    that `import communication` from stealing SIGINT; ZoMBI does not read _shutdown_flag)."""
-    print(f"[SerialIO] Signal {signum} — closing serial path…")
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    print(f"[Communication] Received signal {signum}, shutting down...")
     _shutdown_flag.set()
 
-
-def _register_signal_handlers_in_serial_process_only() -> None:
-    """Call once from `start_serial_dual_io_shared_port` in the serial subprocess."""
-    try:
-        signal.signal(signal.SIGINT, _serial_process_signal_handler)
-        signal.signal(signal.SIGTERM, _serial_process_signal_handler)
-    except (OSError, ValueError):
-        pass
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 def reset_objective(db_path="./sql/objective.db"):
@@ -59,33 +51,6 @@ def reset_objective(db_path="./sql/objective.db"):
         conn.commit()
 
     conn.close()
-
-
-def clear_in_flight_objective_state(db_path: str = "./sql/objective.db") -> None:
-    """
-    After an interrupted / unclean run: clear the objective handshake so the
-    next launch does not treat a partial/stale result as a completed read.
-    Ensures the next `objective()` call can send a new line and
-    `get_y_measurements(..., ready_for_objectives=True)` waits for fresh data.
-    """
-    try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        cur = conn.cursor()
-        cur.execute(
-            """CREATE TABLE IF NOT EXISTS handshake (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                new_objective_available INTEGER DEFAULT 0
-            )"""
-        )
-        cur.execute("INSERT OR IGNORE INTO handshake (id, new_objective_available) VALUES (1, 0)")
-        cur.execute("UPDATE handshake SET new_objective_available = 0 WHERE id = 1")
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='objective'")
-        if cur.fetchone():
-            cur.execute("DELETE FROM objective")
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[communication] clear_in_flight_objective_state: {e!r}")
 
 
 def write_compositions(start,
@@ -598,6 +563,7 @@ def objective_receiver(hz, obj_db_path, mem_db_path, verbose=False, super_verbos
                     c.execute("SELECT * FROM objective")
                     obj = c.fetchall()
                     conn.close()
+                    obj_empty = (len(obj) == 0)  # True only when table has no rows
                     if super_verbose:
                         print(f"[objective_receiver] Objective DB fetchall: {obj}")
                         print(f"[objective_receiver] obj_empty: {obj_empty}")
@@ -779,13 +745,7 @@ def start_serial_dual_io_shared_port(COM, baud,
                                      comp_db="./sql/compositions.db",
                                      chaos=False,
                                      verbose=True,
-                                     super_verbose=False,
-                                     parent_shutdown: Optional[Any] = None):
-    """
-    parent_shutdown: optional multiprocessing.Event; when set (by the parent
-    process), this routine shuts down threads and releases the serial port
-    so the next run can open COM again (Windows / spawn-safe).
-    """
+                                     super_verbose=False):
 
     # Ensure SQL directory exists
     os.makedirs(os.path.dirname(obj_db), exist_ok=True)
@@ -810,15 +770,26 @@ def start_serial_dual_io_shared_port(COM, baud,
         print("[Machine2] Could not open serial port")
         return
 
-    _register_signal_handlers_in_serial_process_only()
-
-    def _parent_requests_stop() -> bool:
-        if parent_shutdown is None:
-            return False
+    # 2) ensure we ALWAYS close/cancel on exit
+    def _cleanup():
         try:
-            return bool(parent_shutdown.is_set())
+            _shutdown_flag.set()  # Signal all threads to stop
+            time.sleep(0.5)  # Give threads time to stop
         except Exception:
-            return False
+            pass
+        try:
+            if ser and ser.is_open:
+                ser.cancel_read()   # abort any blocked reads
+        except Exception:
+            pass
+        try:
+            if ser and ser.is_open:
+                ser.close()
+        except Exception:
+            pass
+        print("[Machine2] Cleanup complete")
+    
+    atexit.register(_cleanup)
 
     # 3) launch a single reader thread that does nothing but read_until('\n') and push into our queue
     def _serial_reader():
@@ -886,40 +857,9 @@ def start_serial_dual_io_shared_port(COM, baud,
     t_o.start()
     t_c.start()
 
-    def _cleanup():
-        _shutdown_flag.set()
-        for t, label in ((reader_thread, "serial_reader"), (t_o, "objective_receiver"), (t_c, "composition_sender")):
-            if t is not None and t.is_alive():
-                t.join(timeout=4.0)
-                if t.is_alive():
-                    print(f"[Machine2] [{label}] still alive after join timeout")
-        time.sleep(0.15)
-        try:
-            if ser and ser.is_open and hasattr(ser, "cancel_read"):
-                ser.cancel_read()
-        except Exception:
-            pass
-        try:
-            if ser and ser.is_open:
-                ser.close()
-        except Exception as e:
-            print(f"[Machine2] Error closing serial: {e!r}")
-        print("[Machine2] Serial port released; cleanup complete")
-
-    _cleanup_done = False
-
-    def _cleanup_once():
-        nonlocal _cleanup_done
-        if _cleanup_done:
-            return
-        _cleanup_done = True
-        _cleanup()
-
-    atexit.register(_cleanup_once)
-
     # 5) block until shutdown or error
     try:
-        while not _shutdown_flag.is_set() and not _parent_requests_stop():
+        while not _shutdown_flag.is_set():
             # Check if threads are still alive
             if not reader_thread.is_alive():
                 print("[Machine2] Serial reader thread died")
@@ -936,7 +876,5 @@ def start_serial_dual_io_shared_port(COM, baud,
     except Exception as e:
         print(f"[Machine2] Unexpected error: {e}")
     finally:
-        if _parent_requests_stop() and not _shutdown_flag.is_set():
-            print("[Machine2] Parent requested shutdown; closing serial port…")
-        _cleanup_once()
+        _cleanup()
         sys.exit(0)

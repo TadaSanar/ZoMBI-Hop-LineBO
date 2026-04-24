@@ -66,14 +66,6 @@ class ZoMBIHop:
         Acquisition optimization restarts. Default: 30.
     raw : int
         Raw samples for initial candidates. Default: 500.
-    penalization_threshold : float
-        Gradient threshold for penalty radius. Default: 1e-3.
-    penalty_num_directions : int, optional
-        Directions for penalty radius estimation. Auto-computed as 10*d if None.
-    penalty_max_radius : float
-        Max penalty radius. Default: 0.3.
-    penalty_radius_step : float, optional
-        Step size for radius search. Auto-computed from input noise if None.
     convergence_pi_threshold : float
         PI threshold for convergence. Default: 0.01.
     input_noise_threshold_mult : float
@@ -125,10 +117,6 @@ class ZoMBIHop:
                  top_m_points: Optional[int] = None,
                  n_restarts: int = 30,
                  raw: int = 500,
-                 penalization_threshold: float = 1e-3,
-                 penalty_num_directions: Optional[int] = None,
-                 penalty_max_radius: float = 0.3,
-                 penalty_radius_step: Optional[float] = None,
                  convergence_pi_threshold: float = 0.01,
                  input_noise_threshold_mult: float = 2.0,
                  output_noise_threshold_mult: float = 2.0,
@@ -146,12 +134,19 @@ class ZoMBIHop:
                  num_iterations_saved: int = 50,
                  max_snapshots: Optional[int] = None,
                  verbose: bool = True,
-                 needle_plot_points_ref: Optional[List[Any]] = None):
+                 needle_plot_points_ref: Optional[List[Any]] = None,
+                 old_needle_radius_mult: float = 3.0,
+                 retry_raw_scale: float = 2.0,
+                 retry_step_scale: float = 0.5,
+                 ellipsoid_drop_fraction: float = 0.25,
+                 ellipsoid_eigenvalue_floor: float = 1e-6):
         """Initialize ZoMBIHop optimizer."""
         self.device = torch.device(device)
         self.dtype = dtype
         self.verbose = verbose
         self._needle_plot_points_ref = needle_plot_points_ref
+        self.ellipsoid_drop_fraction = ellipsoid_drop_fraction
+        self.ellipsoid_eigenvalue_floor = ellipsoid_eigenvalue_floor
 
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
@@ -172,10 +167,6 @@ class ZoMBIHop:
             top_m_points = max(d + 1, 4)
             if self.verbose:
                 print(f"Auto-computed top_m_points = {top_m_points} (based on d={d})")
-        if penalty_num_directions is None:
-            penalty_num_directions = 10 * d
-            if self.verbose:
-                print(f"Auto-computed penalty_num_directions = {penalty_num_directions} (based on d={d})")
 
         effective_max_snapshots = max_snapshots if max_snapshots is not None else num_iterations_saved
 
@@ -186,10 +177,6 @@ class ZoMBIHop:
             top_m_points=top_m_points,
             n_restarts=n_restarts,
             raw=raw,
-            penalization_threshold=penalization_threshold,
-            penalty_num_directions=penalty_num_directions,
-            penalty_max_radius=penalty_max_radius,
-            penalty_radius_step=penalty_radius_step,
             convergence_pi_threshold=convergence_pi_threshold,
             input_noise_threshold_mult=input_noise_threshold_mult,
             output_noise_threshold_mult=output_noise_threshold_mult,
@@ -206,6 +193,9 @@ class ZoMBIHop:
             device=str(self.device),
             dtype=self.dtype,
             d=d,
+            old_needle_radius_mult=old_needle_radius_mult,
+            retry_raw_scale=retry_raw_scale,
+            retry_step_scale=retry_step_scale,
         )
 
         # Resume from snapshot or start fresh
@@ -391,7 +381,6 @@ class ZoMBIHop:
                 if elapsed_hours >= time_limit_hours:
                     self._log(f"Time limit of {time_limit_hours} hours reached. Stopping.")
                     finished = True
-                    dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
                     dh.take_snapshot(f"act{activation}_timeout", permanent=True)
                     break
                 self._log(f"Elapsed time: {elapsed_hours:.2f} / {time_limit_hours:.2f} hours")
@@ -399,181 +388,215 @@ class ZoMBIHop:
             if self.device.type == 'cuda' and activation > 0:
                 torch.cuda.empty_cache()
 
-            needle = None
-            # On the first (possibly resumed) activation use the checkpointed
-            # zoom-level bounds; for every subsequent fresh activation start from
-            # the full activation-start bounds and reset current_zoom_bounds.
-            if activation == start_activation and dh.current_zoom_bounds is not None:
-                bounds = dh.current_zoom_bounds.clone()
-            else:
-                bounds = self.bounds.clone()
-                dh.current_zoom_bounds = bounds.clone()
-            activation_failed = False
+            # At most one automatic retry per activation (scaled params + old_needles).
+            retry_attempted = False
+            saved_raw: Optional[int] = None
+            saved_nat_grad_step: Optional[float] = None
 
-            start_zoom = zoom if activation == start_activation else 0
+            # Inner retry loop — broken on success or after one retry attempt.
+            while True:
+                needle = None
+                # On the first (possibly resumed) activation use the checkpointed
+                # zoom-level bounds; for every subsequent fresh activation or retry
+                # start from the full activation-start bounds.
+                if not retry_attempted and activation == start_activation and dh.current_zoom_bounds is not None:
+                    bounds = dh.current_zoom_bounds.clone()
+                else:
+                    bounds = self.bounds.clone()
+                    dh.current_zoom_bounds = bounds.clone()
+                activation_failed = False
 
-            for zoom in range(start_zoom, dh.max_zooms):
-                self._log(f"\n--- Zoom {zoom+1}/{dh.max_zooms} ---")
-                self._log(f"Bounds: {bounds}")
+                start_zoom = (zoom if (not retry_attempted and activation == start_activation) else 0)
 
-                X, Y = dh.get_gp_data()
-                self._log(f"GP data points: {X.shape[0]}")
-                self.gp_handler.fit(X, Y)
-
-                start_iteration = iteration if (activation == start_activation and zoom == start_zoom) else 0
-                consecutive_converged = 0
-
-                for iteration in range(start_iteration, dh.max_iterations):
-                    # Time limit check
-                    if time_limit_hours is not None:
-                        elapsed_hours = (time.time() - start_time) / 3600.0
-                        if elapsed_hours >= time_limit_hours:
-                            self._log(f"Time limit reached during iteration.")
-                            finished = True
-                            dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                            dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}_timeout", permanent=True)
-                            break
-
-                    candidate = self.gp_handler.get_candidate(bounds, best_f=Y.max().item())
-                    if self.verbose and candidate is not None:
-                        self._log(f"  [ZoMBIHop] GP suggested candidate: {candidate.cpu().numpy()}")
-
-                    if candidate is None:
-                        self._log("No valid candidate found (all in penalized regions)")
-                        activation_failed = True
-                        dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                        self._log_status(activation, zoom, iteration, None)
-                        break
-
-                    prev_best_X, prev_best_Y, _ = dh.get_best_unpenalized()
-
-                    if self.verbose:
-                        self._log(f"  [ZoMBIHop] Calling objective (LineBO samples lines through this candidate)...")
-
-                    unpenalized_X, unpenalized_Y = self._objective_wrapper(
-                        candidate, bounds, self.gp_handler.acq_fn
-                    )
-                    if self.verbose and unpenalized_X.shape[0] > 0:
-                        self._log(f"  [ZoMBIHop] Objective returned {unpenalized_X.shape[0]} points, "
-                                  f"Y in [{unpenalized_Y.min().item():.4f}, {unpenalized_Y.max().item():.4f}]")
+                for zoom in range(start_zoom, dh.max_zooms):
+                    self._log(f"\n--- Zoom {zoom+1}/{dh.max_zooms} ---")
+                    self._log(f"Bounds: {bounds}")
 
                     X, Y = dh.get_gp_data()
+                    self._log(f"GP data points: {X.shape[0]}")
                     self.gp_handler.fit(X, Y)
 
-                    if unpenalized_Y.shape[0] == 0:
-                        self._log("No unpenalized Y values, breaking — every point in this batch "
-                                  "lies inside at least one needle penalty ball.")
-                        activation_failed = True
-                        dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                        dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}_failed", permanent=True)
-                        break
+                    start_iteration = iteration if (activation == start_activation and zoom == start_zoom) else 0
+                    consecutive_converged = 0
 
-                    curr_best_X, curr_best_Y, _ = dh.get_best_unpenalized()
+                    for iteration in range(start_iteration, dh.max_iterations):
+                        # Time limit check
+                        if time_limit_hours is not None:
+                            elapsed_hours = (time.time() - start_time) / 3600.0
+                            if elapsed_hours >= time_limit_hours:
+                                self._log(f"Time limit reached during iteration.")
+                                finished = True
+                                dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}_timeout",
+                                                 activation=activation, zoom=zoom, iteration=iteration,
+                                                 permanent=True)
+                                break
 
-                    converged, pi, log_ei = self._check_convergence_to_needle(
-                        candidate, unpenalized_X, unpenalized_Y, prev_best_X, prev_best_Y
-                    )
-                    if converged:
-                        consecutive_converged += 1
-                    else:
-                        consecutive_converged = 0
+                        candidate = self.gp_handler.get_candidate(bounds, best_f=Y.max().item())
+                        if self.verbose and candidate is not None:
+                            self._log(f"  [ZoMBIHop] GP suggested candidate: {candidate.cpu().numpy()}")
 
-                    self._log_status(activation, zoom, iteration, candidate, pi=pi)
-                    if consecutive_converged > 0:
-                        self._log(f"Convergence count: {consecutive_converged}/{dh.n_consecutive_converged}")
+                        if candidate is None:
+                            self._log("No valid candidate found (all in penalized regions)")
+                            activation_failed = True
+                            self._log_status(activation, zoom, iteration, None)
+                            break
 
-                    self._log(f"Current max Y: {curr_best_Y.item():.4f} | "
-                              f"Overall max: {dh.Y_all[dh.get_penalty_mask()].max().item():.4f}")
+                        prev_best_X, prev_best_Y, _ = dh.get_best_unpenalized()
 
-                    # --- Save snapshot at end of every iteration ---
-                    dh.update_iteration_state(activation, zoom, iteration, 0)
-                    dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}")
+                        if self.verbose:
+                            self._log(f"  [ZoMBIHop] Calling objective (LineBO samples lines through this candidate)...")
 
-                    # --- Declare needle after N consecutive converged iterations ---
-                    if consecutive_converged >= dh.n_consecutive_converged:
-                        needle_X, needle_Y, global_idx = dh.get_best_unpenalized()
-                        needle = needle_X
+                        unpenalized_X, unpenalized_Y = self._objective_wrapper(
+                            candidate, bounds, self.gp_handler.acq_fn
+                        )
+                        if self.verbose and unpenalized_X.shape[0] > 0:
+                            self._log(f"  [ZoMBIHop] Objective returned {unpenalized_X.shape[0]} points, "
+                                      f"Y in [{unpenalized_Y.min().item():.4f}, {unpenalized_Y.max().item():.4f}]")
 
-                        self._log(f"\n*** Found needle at {needle_X.cpu().numpy()} "
-                                  f"with value {needle_Y.item():.4f} ***")
+                        # --- One snapshot per received objective ---
+                        dh.take_snapshot(
+                            f"act{activation}_z{zoom}_i{iteration}",
+                            activation=activation, zoom=zoom, iteration=iteration,
+                        )
 
                         X, Y = dh.get_gp_data()
                         self.gp_handler.fit(X, Y)
-                        self.gp_handler.create_acquisition(best_f=Y.max().item(), penalty_value=-1e6)
 
-                        penalty_radius = self.gp_handler.determine_penalty_radius(
-                            needle=needle_X,
-                            penalization_threshold=dh.penalization_threshold,
-                            num_directions=dh.penalty_num_directions,
-                            max_radius=dh.penalty_max_radius,
-                            radius_step=dh.penalty_radius_step,
+                        if unpenalized_Y.shape[0] == 0:
+                            self._log("No unpenalized Y values, breaking — every point in this batch "
+                                      "lies inside at least one needle penalty ball.")
+                            activation_failed = True
+                            break
+
+                        curr_best_X, curr_best_Y, _ = dh.get_best_unpenalized()
+
+                        converged, pi, log_ei = self._check_convergence_to_needle(
+                            candidate, unpenalized_X, unpenalized_Y, prev_best_X, prev_best_Y
                         )
-                        self._log(f"Penalizing with radius {penalty_radius:.4f}")
+                        if converged:
+                            consecutive_converged += 1
+                        else:
+                            consecutive_converged = 0
 
-                        dh.add_needle(
-                            needle=needle_X,
-                            needle_value=needle_Y.item(),
-                            needle_penalty_radius=penalty_radius,
-                            activation=activation,
-                            zoom=zoom,
-                            iteration=iteration,
-                        )
+                        self._log_status(activation, zoom, iteration, candidate, pi=pi)
+                        if consecutive_converged > 0:
+                            self._log(f"Convergence count: {consecutive_converged}/{dh.n_consecutive_converged}")
 
-                        if self._needle_plot_points_ref is not None:
-                            center = dh.X_all_actual.mean(0)
-                            distance = torch.norm(needle_X - center).item()
-                            self._needle_plot_points_ref.append({
-                                "sample_idx": global_idx + 1,
-                                "y": needle_Y.item(),
-                                "distance": distance,
-                            })
+                        self._log(f"Current max Y: {curr_best_Y.item():.4f} | "
+                                  f"Overall max: {dh.Y_all[dh.get_penalty_mask()].max().item():.4f}")
 
-                        dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                        dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}_needle", permanent=True)
+                        # --- Declare needle after N consecutive converged iterations ---
+                        if consecutive_converged >= dh.n_consecutive_converged:
+                            needle_X, needle_Y, global_idx = dh.get_best_unpenalized()
+                            needle = needle_X
+
+                            self._log(f"\n*** Found needle at {needle_X.cpu().numpy()} "
+                                      f"with value {needle_Y.item():.4f} ***")
+
+                            X, Y = dh.get_gp_data()
+                            self.gp_handler.fit(X, Y)
+                            self.gp_handler.create_acquisition(best_f=Y.max().item(), penalty_value=-1e6)
+
+                            # Hessian-ellipsoid penalization
+                            M_ellipsoid, B_ellipsoid = self.gp_handler.determine_penalty_ellipsoid(
+                                needle=needle_X,
+                                drop_fraction=self.ellipsoid_drop_fraction,
+                                eigenvalue_floor=self.ellipsoid_eigenvalue_floor,
+                            )
+                            self._log("Penalizing with Hessian ellipsoid.")
+
+                            dh.add_needle(
+                                needle=needle_X,
+                                needle_value=needle_Y.item(),
+                                needle_penalty_radius=0.0,
+                                activation=activation,
+                                zoom=zoom,
+                                iteration=iteration,
+                                M=M_ellipsoid,
+                                B=B_ellipsoid,
+                            )
+
+                            if self._needle_plot_points_ref is not None:
+                                center = dh.X_all_actual.mean(0)
+                                distance = torch.norm(needle_X - center).item()
+                                self._needle_plot_points_ref.append({
+                                    "sample_idx": global_idx + 1,
+                                    "y": needle_Y.item(),
+                                    "distance": distance,
+                                })
+
+                            dh.take_snapshot(f"act{activation}_z{zoom}_i{iteration}_needle", permanent=True)
+                            break
+
+                    if finished:
                         break
 
-                if finished:
-                    break
+                    if needle is not None or activation_failed:
+                        test_samples = self.random_sampler(
+                            dh.raw, self.bounds[0], self.bounds[1],
+                            device=str(self.device), torch_dtype=self.dtype
+                        )
+                        unpenalized_mask = dh.get_penalty_mask(test_samples)
+                        penalized_pct = (1 - unpenalized_mask.float().mean().item()) * 100
 
-                if needle is not None or activation_failed:
-                    test_samples = self.random_sampler(
-                        dh.raw, self.bounds[0], self.bounds[1],
-                        device=str(self.device), torch_dtype=self.dtype
-                    )
-                    unpenalized_mask = dh.get_penalty_mask(test_samples)
-                    penalized_pct = (1 - unpenalized_mask.float().mean().item()) * 100
+                        if penalized_pct > 90:
+                            if max_activations == float("inf"):
+                                # Infinite run: zoom out to full simplex and continue
+                                full_bounds = torch.zeros((2, self.d), device=self.device, dtype=self.dtype)
+                                full_bounds[1] = 1.0
+                                dh.bounds = full_bounds.clone().to(device=dh.device, dtype=dh.dtype)
+                                self.bounds = dh.bounds
+                                self._log(f"Too much area penalized: {penalized_pct:.2f}%. "
+                                          f"Zooming out to full simplex.")
+                            else:
+                                self._log(f"Too much area penalized: {penalized_pct:.2f}%. Ending.")
+                                finished = True
+                        break
 
-                    if penalized_pct > 90:
-                        if max_activations == float("inf"):
-                            # Infinite run: zoom out to full simplex and continue
-                            full_bounds = torch.zeros((2, self.d), device=self.device, dtype=self.dtype)
-                            full_bounds[1] = 1.0
-                            dh.bounds = full_bounds.clone().to(device=dh.device, dtype=dh.dtype)
-                            self.bounds = dh.bounds
-                            self._log(f"Too much area penalized: {penalized_pct:.2f}%. "
-                                      f"Zooming out to full simplex.")
-                            dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                            dh.take_snapshot(f"act{activation}_z{zoom}_zoomed_out", permanent=True)
+                    if finished:
+                        break
+
+                    if zoom < dh.max_zooms - 1:
+                        # Constrained hyperrectangle around current best for zoom-in
+                        curr_best_X_zoom, _, _ = dh.get_best_unpenalized()
+                        if curr_best_X_zoom is not None:
+                            bounds = dh.determine_new_bounds_constrained(
+                                curr_best_X_zoom, global_bounds=self.bounds
+                            )
                         else:
-                            self._log(f"Too much area penalized: {penalized_pct:.2f}%. Ending.")
-                            finished = True
-                            dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                            dh.take_snapshot(f"act{activation}_z{zoom}_finished", permanent=True)
-                    break
+                            bounds = dh.determine_new_bounds()
+                        dh.current_zoom_bounds = bounds.clone()
 
-                if finished:
-                    break
+                # --- Retry: demote needles to old_needles and re-run with finer params ---
+                if not finished and activation_failed and needle is None and not retry_attempted:
+                    self._log("Activation failed without finding a needle. "
+                              "Demoting needles to old_needles and retrying with finer params.")
+                    dh.move_needles_to_old()
 
-                if zoom < dh.max_zooms - 1:
-                    bounds = dh.determine_new_bounds()
-                    dh.current_zoom_bounds = bounds.clone()
-                    dh.update_iteration_state(activation, zoom, iteration, dh.no_improvements)
-                    dh.take_snapshot(f"act{activation}_z{zoom}_complete")
+                    saved_raw = dh.raw
+                    saved_nat_grad_step = dh.nat_grad_step
+                    dh.raw = int(dh.raw * dh.retry_raw_scale)
+                    dh.nat_grad_step = dh.nat_grad_step * dh.retry_step_scale
+                    self.gp_handler.raw_samples = dh.raw
+                    self.gp_handler.nat_grad_step = dh.nat_grad_step
+
+                    retry_attempted = True
+                    zoom = 0
+                    iteration = 0
+                    continue  # re-enter inner retry loop
+
+                # Restore scaled params after retry (success or failure)
+                if retry_attempted and saved_raw is not None:
+                    dh.raw = saved_raw
+                    dh.nat_grad_step = saved_nat_grad_step
+                    self.gp_handler.raw_samples = dh.raw
+                    self.gp_handler.nat_grad_step = dh.nat_grad_step
+
+                break  # exit inner retry loop
 
             activation += 1
             zoom = 0
             iteration = 0
-            dh.update_iteration_state(activation, zoom, iteration, 0)
 
         if self.device.type == 'cuda':
             torch.cuda.empty_cache()
